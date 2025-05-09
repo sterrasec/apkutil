@@ -8,75 +8,91 @@ import os
 import subprocess
 from shutil import move
 from colorama import Fore
+import inquirer
 
 ANDROID_SDK_DEFAULT_PATH = '/Library/Android/sdk/'
 ANDROID_HOME = os.environ.get('ANDROID_HOME', ANDROID_SDK_DEFAULT_PATH)
 
-def run_subprocess(cmd):
+# Private methods
+def _run_subprocess(cmd):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     outs, errs = proc.communicate()
     return outs.decode('ascii'), errs.decode('ascii')
 
-def pull_apks(keyword):
-    try:
-        adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
-
-        package_name = get_package_name(keyword)
-        if not package_name:
-            print(f"No package found matching keyword: {keyword}")
-            return False
-        
-        print(f"Package found: {package_name}")
-
-        apk_paths = get_apk_paths(package_name)
-        if not apk_paths:
-            print(f"No APK paths found for package: {package_name}")
-            return False
-
-        pull_apk_files(apk_paths)
-
-        print("APKs have been pulled to the current directory.")
-
-    except (IndexError, FileNotFoundError):
-        print('adb not found.')
-        print('Please install Android SDK Build Tools.')
-        return False
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        return False
-        
-def get_package_name(keyword):
+def _get_package_name(keyword):
     adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
     list_packages_cmd = [adb_path, 'shell', 'pm', 'list', 'packages']
-    outs, errs = run_subprocess(list_packages_cmd)
+    outs, errs = _run_subprocess(list_packages_cmd)
     if (errs is not None) and (len(errs) != 0):
         raise Exception(errs)
 
     package_list = outs.strip().splitlines()
     package_names = [line.split(":")[1] for line in package_list if keyword in line]
-    return package_names[0] if package_names else None
+    return package_names if package_names else None
 
-def get_apk_paths(package_name):
+def _pull_apk_files(apk_paths):
+    adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
+    for apk_path in apk_paths:
+        print(f"Pulling {apk_path}...")
+        pull_cmd = [adb_path, 'pull', apk_path]
+        outs, errs = _run_subprocess(pull_cmd)
+        if (outs is not None) and (len(outs) != 0):
+            print(outs)
+        if (errs is not None) and (len(errs) != 0):
+            raise Exception(errs)
+
+def _get_apk_paths(package_name):
     adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
     path_cmd = [adb_path, 'shell', 'pm', 'path', package_name]
-    outs, errs = run_subprocess(path_cmd)
+    outs, errs = _run_subprocess(path_cmd)
     if (errs is not None) and (len(errs) != 0):
         raise Exception(errs)
 
     apk_paths = outs.strip().splitlines()
     return [line.split(":")[1] for line in apk_paths]
 
-def pull_apk_files(apk_paths):
-    adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
-    for apk_path in apk_paths:
-        print(f"Pulling {apk_path}...")
-        pull_cmd = [adb_path, 'pull', apk_path]
-        outs, errs = run_subprocess(pull_cmd)
-        if (outs is not None) and (len(outs) != 0):
-            print(outs)
-        if (errs is not None) and (len(errs) != 0):
-            raise Exception(errs)
+# Public methods
+def pull_apks(keyword):
+    try:
+        package_names = _get_package_name(keyword)
+        if not package_names:
+            print(f"No package found matching keyword: {keyword}")
+            return False
 
+        questions = [
+            inquirer.List('package_name',
+                message="Select the APK to pull",
+                choices=package_names + ['Not Found'],
+                default='Not Found',
+            ),
+        ]
+        
+        answers = inquirer.prompt(questions)
+        package_name = answers['package_name']
+        
+        if package_name == 'Not Found':
+            print("Operation cancelled.")
+            return False
+        
+        apk_paths = _get_apk_paths(package_name)
+        if not apk_paths:
+            print(f"No APK paths found for package: {package_name}")
+            return False
+
+        _pull_apk_files(apk_paths)
+
+        print("APKs have been pulled to the current directory.")
+        
+        return True
+
+    except (IndexError, FileNotFoundError):
+        print(Fore.RED + 'adb not found.')
+        print(Fore.RED + 'Please install Android SDK Build Tools.')
+        return False
+    except Exception as e:
+        print(Fore.RED + f"An error occurred: {e}")
+        return False
+        
 def decode(apk_path, no_res=False, no_src=False):
     apktool_cmd = ['apktool']
     apktool_cmd.extend(['d', apk_path])
@@ -88,7 +104,7 @@ def decode(apk_path, no_res=False, no_src=False):
         apktool_cmd.extend(['-s'])
 
     try:
-        outs, errs = run_subprocess(apktool_cmd)
+        outs, errs = _run_subprocess(apktool_cmd)
         if (outs is not None) and (len(outs) != 0):
             print(outs)
         
@@ -114,7 +130,7 @@ def build(dir_name, apk_path, aapt2=False):
         apktool_cmd.extend(['--use-aapt2'])
     
     try:
-        outs, errs = run_subprocess(apktool_cmd)
+        outs, errs = _run_subprocess(apktool_cmd)
 
         is_built = False
 
@@ -126,10 +142,12 @@ def build(dir_name, apk_path, aapt2=False):
         
         if (errs is not None) and (len(errs) != 0) and not is_built:
             raise Exception(errs)
+        
+        return True
 
     except FileNotFoundError as e:
-        print('apktool not found.')
-        print('Please install apktool.')
+        print(Fore.RED + 'apktool not found.')
+        print(Fore.RED + 'Please install apktool.')
         return False
 
 def align(apk_path):
@@ -140,7 +158,7 @@ def align(apk_path):
         zipalign_cmd.extend(['-p', '4'])
         zipalign_cmd.append(apk_path)
         zipalign_cmd.append('/tmp/apkutil_tmp.aligned.apk')
-        _, errs = run_subprocess(zipalign_cmd)
+        _, errs = _run_subprocess(zipalign_cmd)
         if len(errs) != 0:
             raise Exception(errs)
 
@@ -148,8 +166,8 @@ def align(apk_path):
         return True
 
     except (IndexError, FileNotFoundError) as e:
-        print('zipalign not found.')
-        print('Please install Android SDK Build Tools.')
+        print(Fore.RED + 'zipalign not found.')
+        print(Fore.RED + 'Please install Android SDK Build Tools.')
         return False
 
 def sign(apk_path):
@@ -183,7 +201,7 @@ def sign(apk_path):
         apksigner_cmd.extend(['--ks-key-alias', ks_key_alias])
         apksigner_cmd.extend(['--ks-pass', ks_pass])
         apksigner_cmd.append(apk_path)
-        outs, errs = run_subprocess(apksigner_cmd)
+        outs, errs = _run_subprocess(apksigner_cmd)
         if (outs is not None) and (len(outs) != 0):
             print(Fore.CYAN + outs)
         
@@ -194,8 +212,8 @@ def sign(apk_path):
         return True
 
     except (IndexError, FileNotFoundError) as e:
-        print('apksigner not found.')
-        print('Please install Android SDK Build Tools.')
+        print(Fore.RED + 'apksigner not found.')
+        print(Fore.RED + 'Please install Android SDK Build Tools.')
         return False
 
 
@@ -220,8 +238,8 @@ def get_packagename(apk_path):
         return True
 
     except (IndexError, FileNotFoundError) as e:
-        print('apksigner not found.')
-        print('Please install Android SDK Build Tools.')
+        print(Fore.RED + 'apksigner not found.')
+        print(Fore.RED + 'Please install Android SDK Build Tools.')
         return False
 
 def get_screenshot():
@@ -236,14 +254,14 @@ def get_screenshot():
         screencap_cmd.append('shell')
         screencap_cmd.append('screencap')
         screencap_cmd.extend(['-p', screenshot_path])
-        _, errs = run_subprocess(screencap_cmd)
+        _, errs = _run_subprocess(screencap_cmd)
         if (errs is not None) and (len(errs) != 0):
             raise Exception(errs)
 
         pull_cmd = [adb_path]
         pull_cmd.append('pull')
         pull_cmd.append(screenshot_path)
-        _, errs = run_subprocess(pull_cmd)
+        _, errs = _run_subprocess(pull_cmd)
         # Logs are output to stderr even if command execution is successful.
         print(errs)
 
@@ -251,15 +269,15 @@ def get_screenshot():
         rm_cmd.append('shell')
         rm_cmd.append('rm')
         rm_cmd.append(screenshot_path)
-        _, errs = run_subprocess(rm_cmd)
+        _, errs = _run_subprocess(rm_cmd)
         if (errs is not None) and (len(errs) != 0):
             print(errs)
 
         return screenshot_file
 
     except (IndexError, FileNotFoundError) as e:
-        print('adb not found.')
-        print('Please install Android SDK Build Tools.')
+        print(Fore.RED + 'adb not found.')
+        print(Fore.RED + 'Please install Android SDK Build Tools.')
         return False
 
 
