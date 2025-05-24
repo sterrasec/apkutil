@@ -15,6 +15,7 @@ setup(
         ],
     },
     install_requires=[
+        'inquirer',
         'colorama',
         'defusedxml'
     ],
