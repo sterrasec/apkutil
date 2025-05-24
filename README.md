@@ -13,6 +13,8 @@ iOS version is [here](https://github.com/sterrasec/ipautil).
 
 - Android SDK build tools
   - Set PATH to `ANDROID_HOME` for `apksigner`, `aapt`, and `zipalign`.
+    - ex) `ANDROID_HOME=/Users/<User Name>/Library/Android/sdk/`
+    - If you are using Android Studio on macOS, the above path should be
 - [Apktool](https://ibotpeaches.github.io/Apktool/)
 
 Also, place `~/apkutil.json` containing the keystore information necessary for signing apk in your home directory.
