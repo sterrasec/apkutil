@@ -126,6 +126,33 @@ Signed
 Output: sample.patched.apk
 ```
 
+### Pull APKs from device
+
+`pull` subcommand allows you to pull APKs from device.
+You can select the APK to pull from the list.
+
+```
+$ apkutil pull sample
+Pulling APKs from device...
+[?] Select the APK to pull: 
+ > com.sterrasec.sample
+   Not Found
+
+Pulling /data/app/~~XXXXXXXXXXX==/com.sterrasec.sample-XXXXXXX==/base.apk...
+
+/data/app/~~XXXXXXXXXXX==/com.sterrasec.sample-XXXXXXX==/base.apk: 1 file pulled, 0 skipped. 31.0 MB/s (22004410 bytes in 0.707s)
+
+Pulling /data/app/~~XXXXXXXXXXX==/com.sterrasec.sample-XXXXXXX==/split_config.arm64_v8a.apk...
+
+/data/app/~~XXXXXXXXXXX==/com.sterrasec.sample-XXXXXXX==/split_config.arm64_v8a.apk: 1 file pulled, 0 skipped. 32.2 MB/s (17029210 bytes in 0.505s)
+
+Pulling /data/app/~~XXXXXXXXXXX==/com.sterrasec.sample-XXXXXXX==/split_config.xxhdpi.apk...
+
+/data/app/~~XXXXXXXXXXX==/com.sterrasec.sample-XXXXXXX==/split_config.xxhdpi.apk: 1 file pulled, 0 skipped. 27.5 MB/s (409126 bytes in 0.014s)
+
+APKs have been pulled to the current directory.
+```
+
 ### Set up networkSecurityConfig
 
 `network` subcommand sets networkSecurityConfig.
