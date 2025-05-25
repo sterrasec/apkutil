@@ -5,8 +5,9 @@ import datetime
 import glob
 import json
 import os
+import shutil
 import subprocess
-from shutil import move
+
 from colorama import Fore
 import inquirer
 
@@ -162,7 +163,7 @@ def align(apk_path):
         if len(errs) != 0:
             raise Exception(errs)
 
-        move('/tmp/apkutil_tmp.aligned.apk', apk_path)
+        shutil.move('/tmp/apkutil_tmp.aligned.apk', apk_path)
         return True
 
     except (IndexError, FileNotFoundError) as e:
@@ -228,12 +229,12 @@ def get_packagename(apk_path):
         grep_proc = subprocess.Popen(["grep", "A: package"], stdin=aapt_proc.stdout)
         aapt_proc.stdout.close()
         outs, errs = grep_proc.communicate()
-        outs, errs = outs.decode('ascii'), errs.decode('ascii')
+        outs, errs = outs, errs
         if (outs is not None) and (len(outs) != 0):
-            print(outs)
+            print(outs.decode('ascii'))
 
         if (errs is not None) and (len(errs) != 0):
-            raise Exception(errs)
+            raise Exception(errs.decode('ascii'))
         
         return True
 
