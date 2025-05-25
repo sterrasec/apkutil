@@ -229,7 +229,6 @@ def get_packagename(apk_path):
         grep_proc = subprocess.Popen(["grep", "A: package"], stdin=aapt_proc.stdout)
         aapt_proc.stdout.close()
         outs, errs = grep_proc.communicate()
-        outs, errs = outs, errs
         if (outs is not None) and (len(outs) != 0):
             print(outs.decode('ascii'))
 
