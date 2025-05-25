@@ -36,10 +36,10 @@ def _pull_apk_files(apk_paths):
         print(f"Pulling {apk_path}...")
         pull_cmd = [adb_path, 'pull', apk_path]
         outs, errs = _run_subprocess(pull_cmd)
-        if (outs is not None) and (len(outs) != 0):
-            print(outs)
-        if (errs is not None) and (len(errs) != 0):
-            raise Exception(errs)
+        print(outs)
+        # adb always outputs to stderr when command is successful
+        # ex. /data/app/SPWhHCAAAELkPgU86YQ/hoge/base.apk: 1 file pulled, 0 skipped. 30.9 MB/s (23004210 bytes in 0.709s)
+        print(errs)
 
 def _get_apk_paths(package_name):
     adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
