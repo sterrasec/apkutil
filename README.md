@@ -35,7 +35,17 @@ $ keytool -genkeypair -v -keystore hoge.keystore -alias fuga -keyalg RSA -keysiz
 
 ## Installation
 
-Since `apkutil` is implemented in Python, it can be installed with the pip command, which is a Python package management system.
+Since `apkutil` is implemented in Python, it can be installed with `uv`/`pip` command, which is a Python package management system.
+
+Using uv:
+
+```
+$ uv tool install git+ssh://git@github.com/sterrasec/apkutil.git
+```
+
+This repository includes `uv.toml` to exclude packages released within the last week during uv dependency resolution.
+
+Using pip:
 
 ```
 $ pip install git+ssh://git@github.com/sterrasec/apkutil.git
