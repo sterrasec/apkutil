@@ -1,6 +1,6 @@
 # apkutil
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/sterrasec/apkutil/blob/master/LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/sterrasec/apkutil/blob/main/LICENSE)
 
 `apkutil` is a useful utility for mobile security testing.
 This tool makes it easy to resign the APK, check for potentially sensitive files and `AndroidManifest.xml` in the APK.
