@@ -122,14 +122,12 @@ def decode(apk_path, no_res=False, no_src=False):
         return False
 
 
-def build(dir_name, apk_path, aapt2=False):
+def build(dir_name, apk_path):
     apktool_cmd = ['apktool']
     apktool_cmd.extend(['b', dir_name])
     apktool_cmd.extend(['-o', apk_path])
+    apktool_cmd.extend(['--use-aapt2'])
 
-    if aapt2:
-        apktool_cmd.extend(['--use-aapt2'])
-    
     try:
         outs, errs = _run_subprocess(apktool_cmd)
 
@@ -220,25 +218,22 @@ def sign(apk_path):
 
 def get_packagename(apk_path):
     try:
-        aapt_path = glob.glob(ANDROID_HOME + '/build-tools/*/aapt')[0]
-        aapt_cmd = [aapt_path]
-        aapt_cmd.append('l')
-        aapt_cmd.append('-a')
-        aapt_cmd.append(apk_path)
-        aapt_proc = subprocess.Popen(aapt_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        grep_proc = subprocess.Popen(["grep", "A: package"], stdin=aapt_proc.stdout)
-        aapt_proc.stdout.close()
-        outs, errs = grep_proc.communicate()
+        aapt2_path = glob.glob(ANDROID_HOME + '/build-tools/*/aapt2')[0]
+        aapt2_cmd = [aapt2_path]
+        aapt2_cmd.append('dump')
+        aapt2_cmd.append('packagename')
+        aapt2_cmd.append(apk_path)
+        outs, errs = _run_subprocess(aapt2_cmd)
         if (outs is not None) and (len(outs) != 0):
-            print(outs.decode('ascii'))
+            print(outs)
 
         if (errs is not None) and (len(errs) != 0):
-            raise Exception(errs.decode('ascii'))
-        
+            raise Exception(errs)
+
         return True
 
     except (IndexError, FileNotFoundError) as e:
-        print(Fore.RED + 'apksigner not found.')
+        print(Fore.RED + 'aapt2 not found.')
         print(Fore.RED + 'Please install Android SDK Build Tools.')
         return False
 

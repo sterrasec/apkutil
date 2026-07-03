@@ -36,7 +36,7 @@ def cmd_set_debuggable(args):
         apk_path = dir_name + ".patched.apk"
 
     try:
-        util.build(dir_name, apk_path, aapt2=args.aapt2)
+        util.build(dir_name, apk_path)
     except Exception as e:
         print(e)
         print(Fore.RED + 'Failed')
@@ -93,7 +93,7 @@ def cmd_set_network(args):
         apk_path = dir_name + ".patched.apk"
 
     try:
-        util.build(dir_name, apk_path, aapt2=args.aapt2)
+        util.build(dir_name, apk_path)
     except Exception as e:
         print(e)
         print(Fore.RED + 'Failed')
@@ -155,7 +155,7 @@ def cmd_all(args):
         apk_path = dir_name + ".patched.apk"
 
     try:
-        util.build(dir_name, apk_path, aapt2=args.aapt2)
+        util.build(dir_name, apk_path)
     except Exception as e:
         print(e)
         print(Fore.RED + 'Failed')
@@ -210,7 +210,7 @@ def cmd_build(args):
     if args.output is None:
         apk_path = args.dir_name + ".patched.apk"
     try:
-        result = util.build(args.dir_name, apk_path, aapt2=args.aapt2)
+        result = util.build(args.dir_name, apk_path)
         if not result:
             raise Exception()
     except Exception as e:
@@ -267,7 +267,7 @@ def cmd_sign(args):
 
 
 def cmd_info(args):
-    print('Getting package name by aapt...')
+    print('Getting package name by aapt2...')
     try:
         result = util.get_packagename(args.apk_path)
         if not result:
@@ -318,8 +318,6 @@ def main():
     parser_all = subparsers.add_parser('all', help='set debuggable & networkSecurityConfig, build & sign APK')
     parser_all.add_argument('apk_path', help='')
     parser_all.add_argument('--output', '-o')
-    parser_all.add_argument('-2', '--aapt2', '--use-aapt2', action='store_true',
-        dest='aapt2', help='use the aapt2 binary instead of aapt as part of the apktool processing.')
     parser_all.set_defaults(handler=cmd_all)
 
     parser_decode = subparsers.add_parser('decode', aliases=['d'], help='decode APK')
@@ -331,8 +329,6 @@ def main():
     parser_decode.set_defaults(handler=cmd_decode)
 
     parser_build = subparsers.add_parser('build', aliases=['b'], help='build APK')
-    parser_build.add_argument('-2', '--aapt2', '--use-aapt2', action='store_true',
-        dest='aapt2', help='use the aapt2 binary instead of aapt as part of the apktool processing.')
     parser_build.add_argument('dir_name', help='')
     parser_build.add_argument('--output', '-o')
     parser_build.set_defaults(handler=cmd_build)

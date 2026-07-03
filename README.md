@@ -197,8 +197,8 @@ Output: sample.patched.apk
 
 ```
 $ apkutil info sample.apk
-Getting package name by aapt...
-    A: package="jp.sterrasec.sample" (Raw: "jp.sterrasec.sample")
+Getting package name by aapt2...
+jp.sterrasec.sample
 ```
 
 ### Get the screenshot
