@@ -9,8 +9,13 @@ where ``debuggable`` / ``network`` handlers read a non-existent ``args.aapt2``.
 
 apktool itself removed ``--use-aapt2`` in 2.12.0 (aapt2 has been its default
 since 2.9.0), so ``util.build`` now passes the flag only to apktool versions
-that still accept it. It also has to tolerate non-ASCII tool output and the
-newer ``I: Built apk into: <path>`` success message.
+that still accept it. It also has to tolerate non-ASCII tool output.
+
+Success of every external tool is judged by its exit code: adb, apktool and
+apksigner all write progress or warnings to stderr on successful runs, and
+apktool's success message changed wording in 2.7.0, so neither stderr nor
+stdout text is a reliable signal. ``warn_if_apktool_outdated`` prints a
+warning (never fails) for apktool older than ``APKTOOL_MIN_VERSION``.
 
 They drive the real ``main()`` parser and the handlers with ``apkutil.util``
 mocked, so they run anywhere without apktool, the Android SDK, a keystore, or a
@@ -45,7 +50,7 @@ def build_parser():
     return captured['parser']
 
 
-def fake_apktool(version_out, build_out='I: Built apk...', build_err=''):
+def fake_apktool(version_out, build_out='I: Built apk...', build_err='', build_rc=0):
     """Return a _run_subprocess stand-in that answers ``apktool --version``
     with ``version_out`` and any other command with the build output. Every
     command is recorded in the returned ``calls`` list."""
@@ -54,8 +59,8 @@ def fake_apktool(version_out, build_out='I: Built apk...', build_err=''):
     def run(cmd):
         calls.append(cmd)
         if cmd[:2] == ['apktool', '--version']:
-            return version_out, ''
-        return build_out, build_err
+            return version_out, '', 0
+        return build_out, build_err, build_rc
     return run, calls
 
 
@@ -132,16 +137,17 @@ class ParseApktoolVersionTest(unittest.TestCase):
 
 
 class BuildSuccessDetectionTest(unittest.TestCase):
-    """util.build recognizes both old and new apktool success messages, and
-    stderr noise on a successful build must not turn into a failure."""
+    """util.build judges success by apktool's exit code: the success message
+    wording differs between apktool versions and stderr noise on a successful
+    build must not turn into a failure."""
 
     NEW_OUT = ('I: Using Apktool 3.0.3\n'
                'I: Building resources...\n'
                'I: Built apk into: /path/x.apk\n')
     OLD_OUT = 'I: Using Apktool 2.4.1\nI: Built apk...\n'
 
-    def _build(self, build_out, build_err=''):
-        run, _ = fake_apktool('3.0.3\n', build_out, build_err)
+    def _build(self, build_out, build_err='', build_rc=0):
+        run, _ = fake_apktool('3.0.3\n', build_out, build_err, build_rc)
         with mock.patch.object(util, '_run_subprocess', side_effect=run):
             return util.build('out_dir', 'out.apk')
 
@@ -159,8 +165,99 @@ class BuildSuccessDetectionTest(unittest.TestCase):
     def test_failure_raises_with_stderr(self):
         usage = 'Apktool 3.0.3 - a tool for reengineering Android apk files\n'
         with self.assertRaises(Exception) as ctx:
-            self._build(usage, 'Unrecognized option: --use-aapt2\n')
+            self._build(usage, 'Unrecognized option: --use-aapt2\n', build_rc=1)
         self.assertIn('Unrecognized option', str(ctx.exception))
+
+    def test_failure_with_empty_stderr_reports_stdout(self):
+        # Exit code decides; the message falls back to stdout when stderr is empty.
+        with self.assertRaises(Exception) as ctx:
+            self._build('usage: apktool b|build [options] <apk-dir>\n', '', build_rc=1)
+        self.assertIn('usage: apktool', str(ctx.exception))
+
+    def test_failure_with_no_output_reports_exit_code(self):
+        with self.assertRaises(Exception) as ctx:
+            self._build('', '', build_rc=1)
+        self.assertEqual(str(ctx.exception), 'apktool exited with code 1')
+
+
+class ExitCodeDrivesOtherToolsTest(unittest.TestCase):
+    """decode/align/sign/get_packagename also decide by exit code."""
+
+    def _patch(self, outs='', errs='', rc=0):
+        return mock.patch.object(util, '_run_subprocess', return_value=(outs, errs, rc))
+
+    def test_decode_success_with_warning(self):
+        with self._patch('I: Using Apktool 3.0.3 on x.apk\n', 'W: something\n', 0):
+            self.assertTrue(util.decode('x.apk'))
+
+    def test_decode_failure_raises_and_strips_force_hint(self):
+        errs = 'Destination directory (x) already exists. Use -f switch if you want to overwrite it.'
+        with self._patch('', errs, 1), self.assertRaises(Exception) as ctx:
+            util.decode('x.apk')
+        self.assertIn('already exists', str(ctx.exception))
+        self.assertNotIn('-f switch', str(ctx.exception))
+
+    def test_sign_success_with_jvm_warning(self):
+        # apksigner on JDK 25 prints native-access WARNINGs to stderr and exits 0.
+        warning = 'WARNING: A restricted method in java.lang.System has been called\n'
+        with mock.patch.object(util.os.path, 'isfile', return_value=True), \
+                mock.patch.object(util.glob, 'glob', return_value=['/sdk/build-tools/36.0.0/apksigner']), \
+                mock.patch('builtins.open', mock.mock_open(read_data=(
+                    '{"keystore_path": "k.jks", "ks-key-alias": "a", "ks-pass": "pass:p"}'))), \
+                self._patch('Signed\n', warning, 0):
+            self.assertTrue(util.sign('x.apk'))
+
+    def test_sign_failure(self):
+        with mock.patch.object(util.os.path, 'isfile', return_value=True), \
+                mock.patch.object(util.glob, 'glob', return_value=['/sdk/build-tools/36.0.0/apksigner']), \
+                mock.patch('builtins.open', mock.mock_open(read_data=(
+                    '{"keystore_path": "k.jks", "ks-key-alias": "a", "ks-pass": "pass:p"}'))), \
+                self._patch('', 'Failed to load signer "signer #1"\n', 2):
+            self.assertFalse(util.sign('x.apk'))
+
+    def test_align_failure(self):
+        with mock.patch.object(util.glob, 'glob', return_value=['/sdk/build-tools/36.0.0/zipalign']), \
+                mock.patch.object(util.shutil, 'move') as move, \
+                self._patch('', "Unable to open 'x.apk' as zip archive\n", 1), \
+                self.assertRaises(Exception):
+            util.align('x.apk')
+        move.assert_not_called()
+
+    def test_get_packagename_failure(self):
+        with mock.patch.object(util.glob, 'glob', return_value=['/sdk/build-tools/36.0.0/aapt2']), \
+                self._patch('', 'x.apk: error: failed opening zip.\n', 1), \
+                self.assertRaises(Exception):
+            util.get_packagename('x.apk')
+
+
+class ApktoolVersionWarningTest(unittest.TestCase):
+    """warn_if_apktool_outdated prints a warning for old apktool and never raises."""
+
+    def _warn(self, version_out):
+        run, _ = fake_apktool(version_out)
+        with mock.patch.object(util, '_run_subprocess', side_effect=run), \
+                mock.patch('builtins.print') as printed:
+            util.warn_if_apktool_outdated()
+        return ''.join(str(c.args[0]) for c in printed.call_args_list)
+
+    def test_recent_versions_are_silent(self):
+        for version in ('2.9.0', '2.11.0', '3.0.3'):
+            with self.subTest(version=version):
+                self.assertEqual(self._warn(version + '\n'), '')
+
+    def test_old_version_warns(self):
+        out = self._warn('2.8.1\n')
+        self.assertIn('apktool 2.8.1 is outdated', out)
+        self.assertIn('2.9.0', out)
+
+    def test_unparseable_version_warns(self):
+        self.assertIn('Could not determine', self._warn('garbage\n'))
+
+    def test_missing_apktool_is_silent(self):
+        with mock.patch.object(util, '_run_subprocess', side_effect=FileNotFoundError), \
+                mock.patch('builtins.print') as printed:
+            util.warn_if_apktool_outdated()
+        printed.assert_not_called()
 
 
 class RunSubprocessDecodingTest(unittest.TestCase):
@@ -169,8 +266,11 @@ class RunSubprocessDecodingTest(unittest.TestCase):
     def _run(self, stdout, stderr):
         proc = mock.MagicMock()
         proc.communicate.return_value = (stdout, stderr)
+        proc.returncode = 0
         with mock.patch.object(util.subprocess, 'Popen', return_value=proc):
-            return util._run_subprocess(['apktool'])
+            outs, errs, returncode = util._run_subprocess(['apktool'])
+        self.assertEqual(returncode, 0)
+        return outs, errs
 
     def test_utf8_output(self):
         outs, errs = self._run('Copyright 2010 Ryszard Wiśniewski\n'.encode('utf-8'),
@@ -220,7 +320,8 @@ class CompositeHandlersDoNotCrashTest(unittest.TestCase):
     def _run(self, argv):
         args = self.parser.parse_args(argv)
         manifest = mock.MagicMock()
-        with mock.patch.object(cli.util, 'decode', return_value=True), \
+        with mock.patch.object(cli.util, 'warn_if_apktool_outdated'), \
+                mock.patch.object(cli.util, 'decode', return_value=True), \
                 mock.patch.object(cli.util, 'check_sensitive_files'), \
                 mock.patch.object(cli.util, 'make_network_security_config'), \
                 mock.patch.object(cli.util, 'build', return_value=True) as build, \

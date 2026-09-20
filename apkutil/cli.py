@@ -10,6 +10,7 @@ from . import util
 
 
 def cmd_set_debuggable(args):
+    util.warn_if_apktool_outdated()
     print('Decoding APK by Apktool...')
     try:
         util.decode(args.apk_path)
@@ -66,6 +67,7 @@ def cmd_set_debuggable(args):
 
 
 def cmd_set_network(args):
+    util.warn_if_apktool_outdated()
     print('Decoding APK by Apktool...')
     try:
         util.decode(args.apk_path)
@@ -123,6 +125,7 @@ def cmd_set_network(args):
 
 
 def cmd_all(args):
+    util.warn_if_apktool_outdated()
     print('Decoding APK by Apktool...')
     try:
         result = util.decode(args.apk_path)
@@ -185,6 +188,7 @@ def cmd_all(args):
 
 
 def cmd_decode(args):
+    util.warn_if_apktool_outdated()
     print('Decoding APK by Apktool...')
     try:
         result = util.decode(args.apk_path, no_res=args.no_res, no_src=args.no_src)
@@ -205,6 +209,7 @@ def cmd_decode(args):
         manifest.check_all()
 
 def cmd_build(args):
+    util.warn_if_apktool_outdated()
     print('Building APK by Apktool...')
     apk_path = args.output
     if args.output is None:
