@@ -15,6 +15,10 @@ import inquirer
 ANDROID_SDK_DEFAULT_PATH = '/Library/Android/sdk/'
 ANDROID_HOME = os.environ.get('ANDROID_HOME', ANDROID_SDK_DEFAULT_PATH)
 
+# Oldest apktool apkutil is known to work with. Older releases can't decode
+# APKs built by recent aapt2 and default to aapt1 when building.
+APKTOOL_MIN_VERSION = (2, 9, 0)
+
 # Private methods
 def _run_subprocess(cmd):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -22,7 +26,23 @@ def _run_subprocess(cmd):
     # Tool output is not guaranteed to be ASCII (e.g. apktool's usage text
     # contains "Wiśniewski", and paths/locales may be non-ASCII), so decode
     # leniently instead of raising UnicodeDecodeError and hiding the real error.
-    return outs.decode('utf-8', errors='replace'), errs.decode('utf-8', errors='replace')
+    #
+    # Success is judged by the exit code, not by whether stderr is empty:
+    # adb, apktool and apksigner all write progress or warnings to stderr on
+    # successful runs.
+    return (outs.decode('utf-8', errors='replace'),
+            errs.decode('utf-8', errors='replace'),
+            proc.returncode)
+
+def _error_message(cmd, outs, errs, returncode):
+    # Prefer stderr, but some tools (e.g. apktool's usage text) report the
+    # failure on stdout, and some (e.g. `pm path` for an unknown package)
+    # print nothing at all.
+    if len(errs.strip()) != 0:
+        return errs
+    if len(outs.strip()) != 0:
+        return outs
+    return '{0} exited with code {1}'.format(os.path.basename(cmd[0]), returncode)
 
 def _parse_apktool_version(version_str):
     # `apktool --version` prints a bare "2.4.1" / "2.12.0-dirty" / "3.0.3" on
@@ -35,13 +55,16 @@ def _parse_apktool_version(version_str):
         return None
     return tuple(int(n or 0) for n in match.groups())
 
+def _get_apktool_version():
+    outs, _, _ = _run_subprocess(['apktool', '--version'])
+    return _parse_apktool_version(outs)
+
 def _apktool_supports_use_aapt2():
     # `--use-aapt2` was removed in apktool 2.12.0 (aapt2 has been the default
     # since 2.9.0). Passing it to 2.12+/3.x fails with "Unrecognized option",
     # so only pass it to versions that still accept it. This keeps aapt2 builds
     # on apktool <= 2.8, where aapt1 is the default.
-    outs, _ = _run_subprocess(['apktool', '--version'])
-    version = _parse_apktool_version(outs)
+    version = _get_apktool_version()
     if version is None:
         return False
     return version < (2, 12, 0)
@@ -49,9 +72,9 @@ def _apktool_supports_use_aapt2():
 def _get_package_name(keyword):
     adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
     list_packages_cmd = [adb_path, 'shell', 'pm', 'list', 'packages']
-    outs, errs = _run_subprocess(list_packages_cmd)
-    if (errs is not None) and (len(errs) != 0):
-        raise Exception(errs)
+    outs, errs, returncode = _run_subprocess(list_packages_cmd)
+    if returncode != 0:
+        raise Exception(_error_message(list_packages_cmd, outs, errs, returncode))
 
     package_list = outs.strip().splitlines()
     package_names = [line.split(":")[1] for line in package_list if keyword in line]
@@ -62,7 +85,9 @@ def _pull_apk_files(apk_paths):
     for apk_path in apk_paths:
         print(f"Pulling {apk_path}...")
         pull_cmd = [adb_path, 'pull', apk_path]
-        outs, errs = _run_subprocess(pull_cmd)
+        outs, errs, returncode = _run_subprocess(pull_cmd)
+        if returncode != 0:
+            raise Exception(_error_message(pull_cmd, outs, errs, returncode))
         print(outs)
         # adb always outputs to stderr when command is successful
         # ex. /data/app/SPWhHCAAAELkPgU86YQ/hoge/base.apk: 1 file pulled, 0 skipped. 30.9 MB/s (23004210 bytes in 0.709s)
@@ -71,9 +96,9 @@ def _pull_apk_files(apk_paths):
 def _get_apk_paths(package_name):
     adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
     path_cmd = [adb_path, 'shell', 'pm', 'path', package_name]
-    outs, errs = _run_subprocess(path_cmd)
-    if (errs is not None) and (len(errs) != 0):
-        raise Exception(errs)
+    outs, errs, returncode = _run_subprocess(path_cmd)
+    if returncode != 0:
+        raise Exception(_error_message(path_cmd, outs, errs, returncode))
 
     apk_paths = outs.strip().splitlines()
     return [line.split(":")[1] for line in apk_paths]
@@ -120,6 +145,21 @@ def pull_apks(keyword):
         print(Fore.RED + f"An error occurred: {e}")
         return False
         
+def warn_if_apktool_outdated():
+    try:
+        version = _get_apktool_version()
+    except FileNotFoundError:
+        # decode()/build() report the missing apktool themselves.
+        return
+
+    if version is None:
+        print(Fore.YELLOW + 'Could not determine the apktool version.')
+        print(Fore.YELLOW + 'apkutil is tested with apktool {0} or later.'.format(
+            '.'.join(map(str, APKTOOL_MIN_VERSION))))
+    elif version < APKTOOL_MIN_VERSION:
+        print(Fore.YELLOW + 'apktool {0} is outdated. Please upgrade to apktool {1} or later.'.format(
+            '.'.join(map(str, version)), '.'.join(map(str, APKTOOL_MIN_VERSION))))
+
 def decode(apk_path, no_res=False, no_src=False):
     apktool_cmd = ['apktool']
     apktool_cmd.extend(['d', apk_path])
@@ -131,14 +171,19 @@ def decode(apk_path, no_res=False, no_src=False):
         apktool_cmd.extend(['-s'])
 
     try:
-        outs, errs = _run_subprocess(apktool_cmd)
+        outs, errs, returncode = _run_subprocess(apktool_cmd)
         if (outs is not None) and (len(outs) != 0):
             print(outs)
         
-        if (errs is not None) and (len(errs) != 0):
+        if returncode != 0:
+            errs = _error_message(apktool_cmd, outs, errs, returncode)
             # unsupported `apktool d -f`
             errs = errs.replace('Use -f switch if you want to overwrite it.', '')
             raise Exception(errs)
+
+        if (errs is not None) and (len(errs) != 0):
+            # warnings on a successful decode
+            print(Fore.YELLOW + errs)
         
         return True
 
@@ -157,20 +202,17 @@ def build(dir_name, apk_path):
         if _apktool_supports_use_aapt2():
             apktool_cmd.extend(['--use-aapt2'])
 
-        outs, errs = _run_subprocess(apktool_cmd)
-
-        is_built = False
+        outs, errs, returncode = _run_subprocess(apktool_cmd)
 
         if (outs is not None) and (len(outs) != 0):
-            # apktool <= 2.6: "I: Built apk..."
-            # apktool >= 2.7: "I: Built apk into: <path>"
-            if "I: Built apk" in outs:
-                is_built = True
-
             print(outs)
         
-        if (errs is not None) and (len(errs) != 0) and not is_built:
-            raise Exception(errs)
+        if returncode != 0:
+            raise Exception(_error_message(apktool_cmd, outs, errs, returncode))
+
+        if (errs is not None) and (len(errs) != 0):
+            # warnings on a successful build
+            print(Fore.YELLOW + errs)
         
         return True
 
@@ -187,9 +229,9 @@ def align(apk_path):
         zipalign_cmd.extend(['-p', '4'])
         zipalign_cmd.append(apk_path)
         zipalign_cmd.append('/tmp/apkutil_tmp.aligned.apk')
-        _, errs = _run_subprocess(zipalign_cmd)
-        if len(errs) != 0:
-            raise Exception(errs)
+        outs, errs, returncode = _run_subprocess(zipalign_cmd)
+        if returncode != 0:
+            raise Exception(_error_message(zipalign_cmd, outs, errs, returncode))
 
         shutil.move('/tmp/apkutil_tmp.aligned.apk', apk_path)
         return True
@@ -230,13 +272,17 @@ def sign(apk_path):
         apksigner_cmd.extend(['--ks-key-alias', ks_key_alias])
         apksigner_cmd.extend(['--ks-pass', ks_pass])
         apksigner_cmd.append(apk_path)
-        outs, errs = _run_subprocess(apksigner_cmd)
+        outs, errs, returncode = _run_subprocess(apksigner_cmd)
         if (outs is not None) and (len(outs) != 0):
             print(Fore.CYAN + outs)
         
-        if (errs is not None) and (len(errs) != 0):
-            print(Fore.RED + errs)
+        if returncode != 0:
+            print(Fore.RED + _error_message(apksigner_cmd, outs, errs, returncode))
             return False
+
+        if (errs is not None) and (len(errs) != 0):
+            # e.g. JVM warnings on a successful signing
+            print(Fore.YELLOW + errs)
         
         return True
 
@@ -253,12 +299,12 @@ def get_packagename(apk_path):
         aapt2_cmd.append('dump')
         aapt2_cmd.append('packagename')
         aapt2_cmd.append(apk_path)
-        outs, errs = _run_subprocess(aapt2_cmd)
+        outs, errs, returncode = _run_subprocess(aapt2_cmd)
         if (outs is not None) and (len(outs) != 0):
             print(outs)
 
-        if (errs is not None) and (len(errs) != 0):
-            raise Exception(errs)
+        if returncode != 0:
+            raise Exception(_error_message(aapt2_cmd, outs, errs, returncode))
 
         return True
 
@@ -279,14 +325,16 @@ def get_screenshot():
         screencap_cmd.append('shell')
         screencap_cmd.append('screencap')
         screencap_cmd.extend(['-p', screenshot_path])
-        _, errs = _run_subprocess(screencap_cmd)
-        if (errs is not None) and (len(errs) != 0):
-            raise Exception(errs)
+        outs, errs, returncode = _run_subprocess(screencap_cmd)
+        if returncode != 0:
+            raise Exception(_error_message(screencap_cmd, outs, errs, returncode))
 
         pull_cmd = [adb_path]
         pull_cmd.append('pull')
         pull_cmd.append(screenshot_path)
-        _, errs = _run_subprocess(pull_cmd)
+        outs, errs, returncode = _run_subprocess(pull_cmd)
+        if returncode != 0:
+            raise Exception(_error_message(pull_cmd, outs, errs, returncode))
         # Logs are output to stderr even if command execution is successful.
         print(errs)
 
@@ -294,9 +342,9 @@ def get_screenshot():
         rm_cmd.append('shell')
         rm_cmd.append('rm')
         rm_cmd.append(screenshot_path)
-        _, errs = _run_subprocess(rm_cmd)
-        if (errs is not None) and (len(errs) != 0):
-            print(errs)
+        outs, errs, returncode = _run_subprocess(rm_cmd)
+        if returncode != 0:
+            print(Fore.YELLOW + _error_message(rm_cmd, outs, errs, returncode))
 
         return screenshot_file
 

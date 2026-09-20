@@ -15,7 +15,8 @@ iOS version is [here](https://github.com/sterrasec/ipautil).
   - Set PATH to `ANDROID_HOME` for `apksigner`, `aapt`, and `zipalign`.
     - ex) `ANDROID_HOME=/Users/<User Name>/Library/Android/sdk/`
     - If you are using Android Studio on macOS, the above path should be
-- [Apktool](https://ibotpeaches.github.io/Apktool/)
+- [Apktool](https://ibotpeaches.github.io/Apktool/) 2.9.0 or later
+  - Older versions still run, but `apkutil` prints a warning because they can't decode APKs built by recent `aapt2`.
 
 Also, place `~/apkutil.json` containing the keystore information necessary for signing apk in your home directory.
 
