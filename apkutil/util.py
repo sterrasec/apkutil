@@ -25,8 +25,12 @@ def _run_subprocess(cmd):
     return outs.decode('utf-8', errors='replace'), errs.decode('utf-8', errors='replace')
 
 def _parse_apktool_version(version_str):
-    # Accepts "2.4.1", "2.12.0-dirty", "2.11.1-SNAPSHOT", "3.0.3", etc.
-    match = re.search(r'(\d+)\.(\d+)(?:\.(\d+))?', version_str or '')
+    # `apktool --version` prints a bare "2.4.1" / "2.12.0-dirty" / "3.0.3" on
+    # most versions, but 2.12.x rejects the option and prints its banner
+    # ("Apktool 2.12.0 - a tool for ...", "with smali 3.0.9 ...") instead.
+    # Anchor to the start of a line so the smali version is never picked up.
+    match = re.search(r'^\s*(?:Apktool\s+)?v?(\d+)\.(\d+)(?:\.(\d+))?',
+                      version_str or '', re.MULTILINE)
     if match is None:
         return None
     return tuple(int(n or 0) for n in match.groups())

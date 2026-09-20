@@ -126,6 +126,9 @@ class ParseApktoolVersionTest(unittest.TestCase):
         self.assertIsNone(util._parse_apktool_version(''))
         self.assertIsNone(util._parse_apktool_version('apktool: command not found'))
         self.assertIsNone(util._parse_apktool_version(None))
+        # Only a leading version counts; a version in the middle of a line
+        # (e.g. the bundled smali version) must not be mistaken for apktool's.
+        self.assertIsNone(util._parse_apktool_version('with smali 3.0.9 and baksmali 3.0.9'))
 
 
 class BuildSuccessDetectionTest(unittest.TestCase):
