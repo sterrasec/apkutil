@@ -5,6 +5,7 @@ import datetime
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -18,7 +19,28 @@ ANDROID_HOME = os.environ.get('ANDROID_HOME', ANDROID_SDK_DEFAULT_PATH)
 def _run_subprocess(cmd):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     outs, errs = proc.communicate()
-    return outs.decode('ascii'), errs.decode('ascii')
+    # Tool output is not guaranteed to be ASCII (e.g. apktool's usage text
+    # contains "Wiśniewski", and paths/locales may be non-ASCII), so decode
+    # leniently instead of raising UnicodeDecodeError and hiding the real error.
+    return outs.decode('utf-8', errors='replace'), errs.decode('utf-8', errors='replace')
+
+def _parse_apktool_version(version_str):
+    # Accepts "2.4.1", "2.12.0-dirty", "2.11.1-SNAPSHOT", "3.0.3", etc.
+    match = re.search(r'(\d+)\.(\d+)(?:\.(\d+))?', version_str or '')
+    if match is None:
+        return None
+    return tuple(int(n or 0) for n in match.groups())
+
+def _apktool_supports_use_aapt2():
+    # `--use-aapt2` was removed in apktool 2.12.0 (aapt2 has been the default
+    # since 2.9.0). Passing it to 2.12+/3.x fails with "Unrecognized option",
+    # so only pass it to versions that still accept it. This keeps aapt2 builds
+    # on apktool <= 2.8, where aapt1 is the default.
+    outs, _ = _run_subprocess(['apktool', '--version'])
+    version = _parse_apktool_version(outs)
+    if version is None:
+        return False
+    return version < (2, 12, 0)
 
 def _get_package_name(keyword):
     adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
@@ -126,15 +148,19 @@ def build(dir_name, apk_path):
     apktool_cmd = ['apktool']
     apktool_cmd.extend(['b', dir_name])
     apktool_cmd.extend(['-o', apk_path])
-    apktool_cmd.extend(['--use-aapt2'])
 
     try:
+        if _apktool_supports_use_aapt2():
+            apktool_cmd.extend(['--use-aapt2'])
+
         outs, errs = _run_subprocess(apktool_cmd)
 
         is_built = False
 
         if (outs is not None) and (len(outs) != 0):
-            if "I: Built apk..." in outs:
+            # apktool <= 2.6: "I: Built apk..."
+            # apktool >= 2.7: "I: Built apk into: <path>"
+            if "I: Built apk" in outs:
                 is_built = True
 
             print(outs)
