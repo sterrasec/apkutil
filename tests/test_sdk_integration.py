@@ -34,22 +34,25 @@ class SdkIntegrationTest(unittest.TestCase):
             sdk_jar = Path(util.ANDROID_HOME) / 'platforms/android-35/android.jar'
             self.assertTrue(sdk_jar.is_file(), str(sdk_jar))
 
+            password = 'abc%USERNAME%xyz!& test'
+
             def run(command):
-                outs, errs, code = util._run_subprocess(command)
+                outs, errs, code = util._run_subprocess(
+                    command, env={'APKUTIL_TEST_KS_PASS': password})
                 self.assertEqual(code, 0, outs + errs)
                 return outs
 
             run([aapt2, 'link', '-I', str(sdk_jar), '--manifest', str(manifest), '-o', str(apk)])
             keytool = shutil.which('keytool')
             self.assertIsNotNone(keytool)
-            password = 'abc%USERNAME%xyz!& test'
             keystore = root / 'key%USERNAME%store.jks'
             alias = 'alias%USERNAME%'
             run([keytool, '-genkeypair', '-keystore', str(keystore),
-                 '-storepass', password, '-keypass', password, '-alias', alias,
+                 '-storepass:env', 'APKUTIL_TEST_KS_PASS',
+                 '-keypass:env', 'APKUTIL_TEST_KS_PASS', '-alias', alias,
                  '-keyalg', 'RSA', '-validity', '1', '-dname', 'CN=apkutil test', '-noprompt'])
             (root / 'apkutil.json').write_text(json.dumps({
-                'keystore_path': '~/' + keystore.name, 'ks-key-alias': alias, 'ks-pass': 'pass:' + password,
+                'keystore_path': '~/' + keystore.name, 'ks-key-alias': alias, 'ks-pass': 'env:APKUTIL_TEST_KS_PASS',
             }))
             with mock.patch.dict(os.environ, {'HOME': directory, 'USERPROFILE': directory,
                                              'USERNAME': 'must-not-expand'}):
