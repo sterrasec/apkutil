@@ -66,18 +66,24 @@ def _find_tool(name):
     raise FileNotFoundError('{0} not found in the Android SDK or PATH'.format(name))
 
 
-def _run_subprocess(cmd):
+def _run_subprocess(cmd, env=None):
     # Resolve apktool via PATH/PATHEXT as CreateProcess does not find .bat/.cmd
     # wrappers from the extensionless name. SDK commands are already resolved.
+    child_env = None
+    if env is not None:
+        child_env = os.environ.copy()
+        child_env.update(env)
     cmd = list(cmd)
     if cmd[0] == 'apktool':
         cmd[0] = _find_tool('apktool')
     if _IS_WINDOWS and os.path.splitext(cmd[0])[1].lower() in ('.bat', '.cmd'):
         # Pass a command-line string so Popen does not re-escape the quotes for
         # the C runtime. /s strips the outer pair, preserving quoted paths.
-        # Environment variables keep cmd metacharacters in arguments literal;
-        # delayed expansion is disabled, including for paths containing '!'.
-        env = os.environ.copy()
+        # Environment variables protect the initial cmd expansion only; a
+        # wrapper using CALL can expand arguments again. Keep passwords out
+        # of arguments. Disable delayed expansion for paths containing '!'.
+        if child_env is None:
+            child_env = os.environ.copy()
         arguments = []
         for index, argument in enumerate(cmd):
             if any(char in argument for char in ('"', '\r', '\n', '\0')):
@@ -87,13 +93,15 @@ def _run_subprocess(cmd):
             # quote after N backslashes must follow 2N backslashes so the
             # native argument parser preserves them and closes the quote.
             trailing_slashes = len(argument) - len(argument.rstrip('\\'))
-            env[key] = argument + '\\' * trailing_slashes
+            child_env[key] = argument + '\\' * trailing_slashes
             arguments.append('"%{0}%"'.format(key))
         shell = os.environ.get('COMSPEC', 'cmd.exe')
         command = '"{0}" /d /v:off /s /c "{1}"'.format(shell, ' '.join(arguments))
-        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-    else:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cmd = command
+    options = {'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE}
+    if child_env is not None:
+        options['env'] = child_env
+    proc = subprocess.Popen(cmd, **options)
     outs, errs = proc.communicate()
     # Tool output is not guaranteed to be ASCII (e.g. apktool's usage text
     # contains "Wiśniewski", and paths/locales may be non-ASCII), so decode
@@ -344,9 +352,15 @@ def sign(apk_path):
         apksigner_cmd.extend(['--v2-signing-enabled', 'true'])
         apksigner_cmd.append('-v')
         apksigner_cmd.extend(['--ks-key-alias', ks_key_alias])
+        signing_env = None
+        if ks_pass.startswith('pass:'):
+            # apksigner.bat uses CALL, which reparses %NAME% even inside quoted
+            # arguments. Let Java read the literal password from its own env.
+            signing_env = {'APKUTIL_KS_PASS': ks_pass[len('pass:'):]}
+            ks_pass = 'env:APKUTIL_KS_PASS'
         apksigner_cmd.extend(['--ks-pass', ks_pass])
         apksigner_cmd.append(apk_path)
-        outs, errs, returncode = _run_subprocess(apksigner_cmd)
+        outs, errs, returncode = _run_subprocess(apksigner_cmd, env=signing_env)
         if (outs is not None) and (len(outs) != 0):
             print(Fore.CYAN + outs)
         

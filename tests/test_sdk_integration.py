@@ -41,13 +41,15 @@ class SdkIntegrationTest(unittest.TestCase):
             run([aapt2, 'link', '-I', str(sdk_jar), '--manifest', str(manifest), '-o', str(apk)])
             keytool = shutil.which('keytool')
             self.assertIsNotNone(keytool)
+            password = 'abc%USERNAME%xyz!& test'
             run([keytool, '-genkeypair', '-keystore', str(root / 'test.jks'),
-                 '-storepass', 'android', '-keypass', 'android', '-alias', 'test',
+                 '-storepass', password, '-keypass', password, '-alias', 'test',
                  '-keyalg', 'RSA', '-validity', '1', '-dname', 'CN=apkutil test', '-noprompt'])
             (root / 'apkutil.json').write_text(json.dumps({
-                'keystore_path': '~/test.jks', 'ks-key-alias': 'test', 'ks-pass': 'pass:android',
+                'keystore_path': '~/test.jks', 'ks-key-alias': 'test', 'ks-pass': 'pass:' + password,
             }))
-            with mock.patch.dict(os.environ, {'HOME': directory, 'USERPROFILE': directory}):
+            with mock.patch.dict(os.environ, {'HOME': directory, 'USERPROFILE': directory,
+                                             'USERNAME': 'must-not-expand'}):
                 if os.name == 'nt':
                     del os.environ['HOME']
                 # Exercise the installed entry point via the same main() used by apkutil.

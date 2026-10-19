@@ -195,3 +195,80 @@ class ExecutionTest(unittest.TestCase):
                     del os.environ['HOME']
                 self.assertTrue(util.sign(str(apk)))
                 self.assertIn(str(root / 'key.jks'), run.call_args.args[0])
+
+
+class SigningPasswordTest(unittest.TestCase):
+    def sign_with_config(self, password):
+        config = json.dumps({'keystore_path': 'key.jks', 'ks-key-alias': 'test',
+                             'ks-pass': password})
+        with mock.patch('builtins.open', mock.mock_open(read_data=config)), \
+                mock.patch.object(util.os.path, 'isfile', return_value=True), \
+                mock.patch.object(util, '_find_tool', return_value='apksigner.bat'):
+            return util.sign('sample.apk')
+
+    def test_inline_password_is_only_in_child_environment(self):
+        password = 'abc%USERNAME%xyz!& "quoted"'
+        with mock.patch.dict(os.environ, {'APKUTIL_KS_PASS': 'parent-value'}), \
+                mock.patch.object(util, '_run_subprocess', return_value=('', '', 0)) as run:
+            self.assertTrue(self.sign_with_config('pass:' + password))
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index('--ks-pass') + 1], 'env:APKUTIL_KS_PASS')
+            self.assertNotIn(password, ' '.join(command))
+            self.assertEqual(run.call_args.kwargs['env'], {'APKUTIL_KS_PASS': password})
+            self.assertEqual(os.environ['APKUTIL_KS_PASS'], 'parent-value')
+
+    def test_other_password_sources_are_unchanged(self):
+        for password in ('env:MY_PASSWORD', 'file:password.txt', 'stdin'):
+            with self.subTest(password=password), \
+                    mock.patch.object(util, '_run_subprocess', return_value=('', '', 0)) as run:
+                self.assertTrue(self.sign_with_config(password))
+                command = run.call_args.args[0]
+                self.assertEqual(command[command.index('--ks-pass') + 1], password)
+                self.assertIsNone(run.call_args.kwargs['env'])
+
+    def test_child_environment_is_scoped_for_native_and_batch_commands(self):
+        password = 'abc%USERNAME%xyz'
+        for command in (['signer.exe', 'env:APKUTIL_KS_PASS'],
+                        ['signer.bat', 'env:APKUTIL_KS_PASS']):
+            with self.subTest(command=command), \
+                    mock.patch.object(util, '_IS_WINDOWS', True), \
+                    mock.patch.dict(os.environ, {'APKUTIL_KS_PASS': 'parent-value'}), \
+                    mock.patch.object(util.subprocess, 'Popen', side_effect=FileNotFoundError) as popen:
+                overrides = {'APKUTIL_KS_PASS': password}
+                with self.assertRaises(FileNotFoundError):
+                    util._run_subprocess(command, env=overrides)
+                child_env = popen.call_args.kwargs['env']
+                self.assertEqual(child_env['APKUTIL_KS_PASS'], password)
+                self.assertNotIn(password, str(popen.call_args.args[0]))
+                self.assertTrue(all(password not in value for key, value in child_env.items()
+                                    if key.startswith('APKUTIL_ARG_')))
+                self.assertEqual(os.environ['APKUTIL_KS_PASS'], 'parent-value')
+                self.assertEqual(overrides, {'APKUTIL_KS_PASS': password})
+
+    @unittest.skipUnless(os.name == 'nt', 'Requires cmd.exe and CALL expansion')
+    def test_sign_password_survives_call_reexpansion(self):
+        password = 'abc%USERNAME%xyz!& test'
+        with tempfile.TemporaryDirectory(prefix='apkutil signing ') as directory:
+            root = Path(directory)
+            script = root / 'apksigner.bat'
+            script.write_text(
+                '@echo off\nsetlocal\nset params=%*\n'
+                'call "%APKUTIL_TEST_PYTHON%" "%~dp0check_password.py" %params%\n'
+                'exit /b %errorlevel%\n')
+            (root / 'check_password.py').write_text(
+                'import os, sys\n'
+                'source = sys.argv[sys.argv.index("--ks-pass") + 1]\n'
+                'password = os.environ[source[4:]] if source.startswith("env:") else source[5:]\n'
+                'sys.exit(0 if password == ' + repr(password) + ' else 21)\n')
+            config = json.dumps({'keystore_path': 'key.jks', 'ks-key-alias': 'test',
+                                 'ks-pass': 'pass:' + password})
+            with mock.patch.dict(os.environ, {'USERNAME': 'must-not-expand',
+                                              'APKUTIL_TEST_PYTHON': sys.executable}), \
+                    mock.patch('builtins.open', mock.mock_open(read_data=config)), \
+                    mock.patch.object(util.os.path, 'isfile', return_value=True), \
+                    mock.patch.object(util, '_find_tool', return_value=str(script)):
+                # Prove the fixture reproduces the original CALL expansion.
+                _, _, code = util._run_subprocess(
+                    [str(script), 'sign', '--ks-pass', 'pass:' + password])
+                self.assertEqual(code, 21)
+                self.assertTrue(util.sign('sample.apk'))
