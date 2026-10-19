@@ -201,7 +201,7 @@ class ExitCodeDrivesOtherToolsTest(unittest.TestCase):
         # apksigner on JDK 25 prints native-access WARNINGs to stderr and exits 0.
         warning = 'WARNING: A restricted method in java.lang.System has been called\n'
         with mock.patch.object(util.os.path, 'isfile', return_value=True), \
-                mock.patch.object(util.glob, 'glob', return_value=['/sdk/build-tools/36.0.0/apksigner']), \
+                mock.patch.object(util, '_find_tool', return_value='/sdk/build-tools/36.0.0/apksigner'), \
                 mock.patch('builtins.open', mock.mock_open(read_data=(
                     '{"keystore_path": "k.jks", "ks-key-alias": "a", "ks-pass": "pass:p"}'))), \
                 self._patch('Signed\n', warning, 0):
@@ -209,14 +209,14 @@ class ExitCodeDrivesOtherToolsTest(unittest.TestCase):
 
     def test_sign_failure(self):
         with mock.patch.object(util.os.path, 'isfile', return_value=True), \
-                mock.patch.object(util.glob, 'glob', return_value=['/sdk/build-tools/36.0.0/apksigner']), \
+                mock.patch.object(util, '_find_tool', return_value='/sdk/build-tools/36.0.0/apksigner'), \
                 mock.patch('builtins.open', mock.mock_open(read_data=(
                     '{"keystore_path": "k.jks", "ks-key-alias": "a", "ks-pass": "pass:p"}'))), \
                 self._patch('', 'Failed to load signer "signer #1"\n', 2):
             self.assertFalse(util.sign('x.apk'))
 
     def test_align_failure(self):
-        with mock.patch.object(util.glob, 'glob', return_value=['/sdk/build-tools/36.0.0/zipalign']), \
+        with mock.patch.object(util, '_find_tool', return_value='/sdk/build-tools/36.0.0/zipalign'), \
                 mock.patch.object(util.shutil, 'move') as move, \
                 self._patch('', "Unable to open 'x.apk' as zip archive\n", 1), \
                 self.assertRaises(Exception):
@@ -224,7 +224,7 @@ class ExitCodeDrivesOtherToolsTest(unittest.TestCase):
         move.assert_not_called()
 
     def test_get_packagename_failure(self):
-        with mock.patch.object(util.glob, 'glob', return_value=['/sdk/build-tools/36.0.0/aapt2']), \
+        with mock.patch.object(util, '_find_tool', return_value='/sdk/build-tools/36.0.0/aapt2'), \
                 self._patch('', 'x.apk: error: failed opening zip.\n', 1), \
                 self.assertRaises(Exception):
             util.get_packagename('x.apk')
@@ -267,7 +267,8 @@ class RunSubprocessDecodingTest(unittest.TestCase):
         proc = mock.MagicMock()
         proc.communicate.return_value = (stdout, stderr)
         proc.returncode = 0
-        with mock.patch.object(util.subprocess, 'Popen', return_value=proc):
+        with mock.patch.object(util, '_find_tool', return_value='apktool'), \
+                mock.patch.object(util.subprocess, 'Popen', return_value=proc):
             outs, errs, returncode = util._run_subprocess(['apktool'])
         self.assertEqual(returncode, 0)
         return outs, errs

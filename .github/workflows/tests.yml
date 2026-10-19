@@ -1,0 +1,62 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Python dependencies
+        run: python -m pip install . pytest
+      - name: Run regression tests
+        run: python -m pytest -q
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        shell: python
+        run: |
+          import shutil
+          import sys
+          from apkutil.util import _run_subprocess
+          out, err, code = _run_subprocess([shutil.which('sdkmanager'), 'platform-tools', 'build-tools;35.0.0', 'platforms;android-35'])
+          print(out)
+          print(err, file=sys.stderr)
+          sys.exit(code)
+      - name: Install apktool with a path containing spaces
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import urllib.request
+          directory = Path(os.environ['RUNNER_TEMP']) / 'apktool bin'
+          directory.mkdir(exist_ok=True)
+          urllib.request.urlretrieve('https://github.com/iBotPeaches/Apktool/releases/download/v2.12.0/apktool_2.12.0.jar', directory / 'apktool.jar')
+          if os.name == 'nt':
+              (directory / 'apktool.bat').write_text('@echo off\njava -jar "%~dp0apktool.jar" %*\n')
+          else:
+              script = directory / 'apktool'
+              script.write_text('#!/bin/sh\nexec java -jar "$(dirname "$0")/apktool.jar" "$@"\n')
+              script.chmod(0o755)
+          with open(os.environ['GITHUB_PATH'], 'a') as path:
+              path.write(str(directory) + '\n')
+      - name: Exercise info and debuggable with real tools
+        env:
+          APKUTIL_SDK_TESTS: '1'
+        run: python -m pytest -q tests/test_sdk_integration.py tests/test_tools.py
