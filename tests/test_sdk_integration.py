@@ -61,3 +61,13 @@ class SdkIntegrationTest(unittest.TestCase):
                 run([util._find_tool('zipalign'), '-c', '4', str(output)])
                 xml = run([aapt2, 'dump', 'xmltree', str(output), '--file', 'AndroidManifest.xml'])
                 self.assertRegex(xml, r'android:debuggable[^\r\n]*true')
+
+                # Rebuild the decoded directory with a trailing separator.
+                # On Windows this exercises .\\sample app\\ through apktool.bat
+                # and Java, including the boundary before the -o option.
+                rebuilt = root / 'rebuilt app.apk'
+                decoded_dir = '.' + os.sep + apk.stem + os.sep
+                log = run(entry + ['build', decoded_dir, '-o', rebuilt.name])
+                self.assertTrue(rebuilt.is_file(), log)
+                run([util._find_tool('apksigner'), 'verify', str(rebuilt)])
+                run([util._find_tool('zipalign'), '-c', '4', str(rebuilt)])

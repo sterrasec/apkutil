@@ -1,4 +1,5 @@
 """Cross-platform SDK discovery and execution regressions (issues #19/#26)."""
+import json
 import os
 from pathlib import Path
 import sys
@@ -125,15 +126,41 @@ class ExecutionTest(unittest.TestCase):
             self.assertEqual(popen.call_args.args[0], command)
             self.assertNotIn('env', popen.call_args.kwargs)
 
+    def test_batch_wrapper_escapes_trailing_backslashes(self):
+        proc = mock.Mock(returncode=0)
+        proc.communicate.return_value = (b'', b'')
+        with mock.patch.object(util, '_IS_WINDOWS', True), \
+                mock.patch.object(util.subprocess, 'Popen', return_value=proc) as popen:
+            util._run_subprocess(['apktool.bat', 'b', '.\\app\\', '-o', 'out.apk'])
+            env = popen.call_args.kwargs['env']
+            self.assertEqual(env['APKUTIL_ARG_2'], '.\\app\\\\')
+            self.assertEqual(env['APKUTIL_ARG_3'], '-o')
+            self.assertEqual(env['APKUTIL_ARG_4'], 'out.apk')
+
     @unittest.skipUnless(os.name == 'nt', 'Requires cmd.exe')
     def test_real_windows_batch_arguments(self):
         with tempfile.TemporaryDirectory(prefix='apkutil batch ') as directory:
-            script = Path(directory) / 'echo args.cmd'
-            script.write_text('@echo off\necho [%~1]\necho [%~2]\nexit /b 7\n')
-            args = ['app & (sample).apk', '%PATH%!literal!']
-            out, _, code = util._run_subprocess([str(script)] + args)
-            self.assertEqual(out.splitlines(), ['[' + arg + ']' for arg in args])
-            self.assertEqual(code, 7)
+            root = Path(directory)
+            (root / 'capture_args.py').write_text(
+                'import json, sys\n'
+                'print(json.dumps(sys.argv[1:]))\n'
+                'sys.exit(7)\n')
+            args = ['app & (sample).apk', '%PATH%!literal!', '',
+                    '.\\app\\', '-o', 'out.apk', 'C:\\',
+                    '.\\app with spaces\\\\', 'following argument', 'last\\']
+            for suffix in ('.bat', '.cmd'):
+                with self.subTest(suffix=suffix):
+                    script = root / ('forward args' + suffix)
+                    # Forward the original quoted parameters to a native argv
+                    # parser, as apktool/apksigner do when launching Java.
+                    script.write_text(
+                        '@echo off\n'
+                        '"%APKUTIL_TEST_PYTHON%" "%~dp0capture_args.py" %*\n'
+                        'exit /b %errorlevel%\n')
+                    with mock.patch.dict(os.environ, {'APKUTIL_TEST_PYTHON': sys.executable}):
+                        out, err, code = util._run_subprocess([str(script)] + args)
+                    self.assertEqual(code, 7, out + err)
+                    self.assertEqual(json.loads(out), args)
 
     def test_alignment_uses_unique_temp_file_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as directory:

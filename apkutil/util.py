@@ -83,7 +83,11 @@ def _run_subprocess(cmd):
             if any(char in argument for char in ('"', '\r', '\n', '\0')):
                 raise ValueError('Unsupported character in Windows batch argument')
             key = 'APKUTIL_ARG_{0}'.format(index)
-            env[key] = argument
+            # Batch wrappers forward %* to Java/native programs. A closing
+            # quote after N backslashes must follow 2N backslashes so the
+            # native argument parser preserves them and closes the quote.
+            trailing_slashes = len(argument) - len(argument.rstrip('\\'))
+            env[key] = argument + '\\' * trailing_slashes
             arguments.append('"%{0}%"'.format(key))
         shell = os.environ.get('COMSPEC', 'cmd.exe')
         command = '"{0}" /d /v:off /s /c "{1}"'.format(shell, ' '.join(arguments))
