@@ -18,6 +18,10 @@ TOOLS = {
         'https://github.com/iBotPeaches/Apktool/releases/download/v2.12.0/apktool_2.12.0.jar',
         'effb69dab2f93806cafc0d232f6be32c2551b8d51c67650f575e46c016908fdd',
     ),
+    'apktool-windows-wrapper': (
+        'https://raw.githubusercontent.com/iBotPeaches/Apktool/0228f9800ebf263436e56026a87df43fb9d7ca80/scripts/windows/apktool.bat',
+        '3e1c29f9d2c7b3a7c938573f4c2ae61172f6221dc9febfa85080f354357d6336',
+    ),
     # pinact is run on the Linux x64 matrix entry only.
     'pinact': (
         'https://github.com/suzuki-shunsuke/pinact/releases/download/v2.0.4/pinact_linux_amd64.tar.gz',
@@ -48,7 +52,10 @@ def main(tool):
     if tool == 'apktool':
         shutil.copyfile(cache, directory / 'apktool.jar')
         if os.name == 'nt':
-            (directory / 'apktool.bat').write_text('@echo off\njava -jar "%~dp0apktool.jar" %*\n')
+            wrapper_url, wrapper_digest = TOOLS['apktool-windows-wrapper']
+            wrapper = verified_download(wrapper_url, wrapper_digest,
+                                        Path('.cache/ci/apktool.bat'))
+            (directory / 'apktool.bat').write_bytes(wrapper)
         else:
             script = directory / 'apktool'
             script.write_text('#!/bin/sh\nexec java -jar "$(dirname "$0")/apktool.jar" "$@"\n')

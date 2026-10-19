@@ -66,6 +66,29 @@ def _find_tool(name):
     raise FileNotFoundError('{0} not found in the Android SDK or PATH'.format(name))
 
 
+def _apksigner_java_command(wrapper):
+    # The SDK's batch launcher uses CALL, which reparses every argument. Launch
+    # its JAR directly so paths, aliases and other options reach Java literally.
+    directory = os.path.dirname(os.path.abspath(wrapper))
+    candidates = [os.path.join(directory, 'apksigner.jar'),
+                  os.path.join(directory, 'lib', 'apksigner.jar'),
+                  os.path.join(directory, '..', 'framework', 'apksigner.jar')]
+    jar = next((path for path in candidates if os.path.isfile(path)), None)
+    if jar is None:
+        raise RuntimeError('apksigner.jar not found beside {0}'.format(wrapper))
+    java_home = os.environ.get('JAVA_HOME', '').strip('"')
+    if java_home:
+        java = os.path.join(java_home, 'bin', 'java.exe')
+        if not os.path.isfile(java):
+            raise RuntimeError('java.exe not found in JAVA_HOME')
+    else:
+        java = shutil.which('java')
+        if java is None:
+            raise RuntimeError('java not found in PATH; please install Java or set JAVA_HOME')
+    # Match the SDK wrapper's default VM settings.
+    return [java, '-Xmx1024M', '-Xss1m', '-jar', jar]
+
+
 def _run_subprocess(cmd, env=None):
     # Resolve apktool via PATH/PATHEXT as CreateProcess does not find .bat/.cmd
     # wrappers from the extensionless name. SDK commands are already resolved.
@@ -76,7 +99,12 @@ def _run_subprocess(cmd, env=None):
     cmd = list(cmd)
     if cmd[0] == 'apktool':
         cmd[0] = _find_tool('apktool')
-    if _IS_WINDOWS and os.path.splitext(cmd[0])[1].lower() in ('.bat', '.cmd'):
+    is_batch = _IS_WINDOWS and os.path.splitext(cmd[0])[1].lower() in ('.bat', '.cmd')
+    is_apktool_batch = is_batch and os.path.basename(cmd[0]).lower() in ('apktool.bat', 'apktool.cmd')
+    if is_batch and os.path.basename(cmd[0]).lower() in ('apksigner.bat', 'apksigner.cmd'):
+        cmd = _apksigner_java_command(cmd[0]) + cmd[1:]
+        is_batch = False
+    if is_batch:
         # Pass a command-line string so Popen does not re-escape the quotes for
         # the C runtime. /s strips the outer pair, preserving quoted paths.
         # Environment variables protect the initial cmd expansion only; a
@@ -99,6 +127,10 @@ def _run_subprocess(cmd, env=None):
         command = '"{0}" /d /v:off /s /c "{1}"'.format(shell, ' '.join(arguments))
         cmd = command
     options = {'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE}
+    if is_apktool_batch:
+        # The official wrapper runs PAUSE under cmd /c. Give it EOF rather
+        # than inheriting a terminal or an open input pipe and waiting forever.
+        options['stdin'] = subprocess.DEVNULL
     if child_env is not None:
         options['env'] = child_env
     proc = subprocess.Popen(cmd, **options)

@@ -2,7 +2,9 @@
 
 All workflow Actions are pinned to full commit SHAs. Linux runs
 `pinact run --check --verify` using pinact 2.0.4; its release archive and apktool
-2.12.0 are verified against digests committed in `setup_tools.py`. Action updates
+2.12.0 are verified against digests committed in `setup_tools.py`. Windows uses
+the unmodified official apktool.bat from the pinned upstream commit, also
+verified by SHA-256. Action updates
 are proposed weekly by Dependabot. To update pins locally, run `pinact run`,
 review the changes, then `pinact run --check --verify`.
 
@@ -38,3 +40,9 @@ images and their SDK/Java tools, PyPI, upstream releases, and reviewed dependenc
 updates remain trust boundaries. Tests use `pull_request`, read-only repository
 permissions, no secrets, and checkout without persisted credentials. CodeQL
 retains `security-events: write` to upload its results.
+
+The Windows SDK smoke test leaves an input pipe open while querying apktool,
+so an accidental PAUSE blocks and fails the timeout rather than passing because
+CI already closed stdin. Signing uses the SDK's apksigner JAR via native Java
+arguments to avoid the batch launcher's CALL re-expansion. The smoke test uses
+literal `%USERNAME%` in APK/keystore filenames, the key alias, and the password.

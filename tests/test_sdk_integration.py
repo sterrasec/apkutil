@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -27,8 +28,8 @@ class SdkIntegrationTest(unittest.TestCase):
                 '<uses-sdk android:minSdkVersion="23" android:targetSdkVersion="28" />'
                 '<application android:hasCode="false" android:label="Smoke" />'
                 '</manifest>', encoding='utf-8')
-            apk = root / 'sample app.apk'
-            output = root / 'patched app.apk'
+            apk = root / 'sample %USERNAME% app.apk'
+            output = root / 'patched %USERNAME% app.apk'
             aapt2 = util._find_tool('aapt2')
             sdk_jar = Path(util.ANDROID_HOME) / 'platforms/android-35/android.jar'
             self.assertTrue(sdk_jar.is_file(), str(sdk_jar))
@@ -42,11 +43,13 @@ class SdkIntegrationTest(unittest.TestCase):
             keytool = shutil.which('keytool')
             self.assertIsNotNone(keytool)
             password = 'abc%USERNAME%xyz!& test'
-            run([keytool, '-genkeypair', '-keystore', str(root / 'test.jks'),
-                 '-storepass', password, '-keypass', password, '-alias', 'test',
+            keystore = root / 'key%USERNAME%store.jks'
+            alias = 'alias%USERNAME%'
+            run([keytool, '-genkeypair', '-keystore', str(keystore),
+                 '-storepass', password, '-keypass', password, '-alias', alias,
                  '-keyalg', 'RSA', '-validity', '1', '-dname', 'CN=apkutil test', '-noprompt'])
             (root / 'apkutil.json').write_text(json.dumps({
-                'keystore_path': '~/test.jks', 'ks-key-alias': 'test', 'ks-pass': 'pass:' + password,
+                'keystore_path': '~/' + keystore.name, 'ks-key-alias': alias, 'ks-pass': 'pass:' + password,
             }))
             with mock.patch.dict(os.environ, {'HOME': directory, 'USERPROFILE': directory,
                                              'USERNAME': 'must-not-expand'}):
@@ -55,6 +58,22 @@ class SdkIntegrationTest(unittest.TestCase):
                 # Exercise the installed entry point via the same main() used by apkutil.
                 entry = [sys.executable, '-c',
                          'from apkutil.cli import main; import os; os.chdir({0!r}); main()'.format(directory)]
+                if os.name == 'nt':
+                    # Keep stdin's writer open while waiting: inheriting it
+                    # would leave the official apktool.bat stuck at PAUSE.
+                    probe = subprocess.Popen(
+                        [sys.executable, '-c',
+                         'from apkutil import util; assert util._get_apktool_version() is not None'],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    try:
+                        probe.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        probe.stdin.close()
+                        probe.stdin = None
+                        probe.communicate(timeout=10)
+                        self.fail('Official apktool.bat waited for input')
+                    stdout, stderr = probe.communicate(timeout=10)
+                    self.assertEqual(probe.returncode, 0, (stdout + stderr).decode(errors='replace'))
                 info = run(entry + ['info', apk.name])
                 self.assertIn('com.example.apkutilsmoke', info)
                 log = run(entry + ['debuggable', apk.name, '-o', output.name])
@@ -67,7 +86,7 @@ class SdkIntegrationTest(unittest.TestCase):
                 # Rebuild the decoded directory with a trailing separator.
                 # On Windows this exercises .\\sample app\\ through apktool.bat
                 # and Java, including the boundary before the -o option.
-                rebuilt = root / 'rebuilt app.apk'
+                rebuilt = root / 'rebuilt %USERNAME% app.apk'
                 decoded_dir = '.' + os.sep + apk.stem + os.sep
                 log = run(entry + ['build', decoded_dir, '-o', rebuilt.name])
                 self.assertTrue(rebuilt.is_file(), log)

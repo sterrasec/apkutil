@@ -246,29 +246,79 @@ class SigningPasswordTest(unittest.TestCase):
                 self.assertEqual(overrides, {'APKUTIL_KS_PASS': password})
 
     @unittest.skipUnless(os.name == 'nt', 'Requires cmd.exe and CALL expansion')
-    def test_sign_password_survives_call_reexpansion(self):
+    def test_sign_paths_and_alias_survive_call_reexpansion(self):
         password = 'abc%USERNAME%xyz!& test'
+        expected = ['sign', '-ks', 'key%USERNAME%store.jks',
+                    '--v2-signing-enabled', 'true', '-v',
+                    '--ks-key-alias', 'alias%USERNAME%',
+                    '--ks-pass', 'env:APKUTIL_KS_PASS', 'sample%USERNAME%.apk']
         with tempfile.TemporaryDirectory(prefix='apkutil signing ') as directory:
             root = Path(directory)
-            script = root / 'apksigner.bat'
+            script = root / 'call-wrapper.bat'
             script.write_text(
                 '@echo off\nsetlocal\nset params=%*\n'
-                'call "%APKUTIL_TEST_PYTHON%" "%~dp0check_password.py" %params%\n'
+                'call "%APKUTIL_TEST_PYTHON%" "%~dp0check_signing.py" %params%\n'
                 'exit /b %errorlevel%\n')
-            (root / 'check_password.py').write_text(
-                'import os, sys\n'
+            checker = root / 'check_signing.py'
+            checker.write_text(
+                'import json, os, sys\n'
                 'source = sys.argv[sys.argv.index("--ks-pass") + 1]\n'
-                'password = os.environ[source[4:]] if source.startswith("env:") else source[5:]\n'
-                'sys.exit(0 if password == ' + repr(password) + ' else 21)\n')
-            config = json.dumps({'keystore_path': 'key.jks', 'ks-key-alias': 'test',
-                                 'ks-pass': 'pass:' + password})
+                'password = os.environ[source[4:]]\n'
+                'valid = sys.argv[1:] == json.loads(os.environ["APKUTIL_EXPECTED_ARGS"])\n'
+                'valid = valid and password == os.environ["APKUTIL_EXPECTED_PASSWORD"]\n'
+                'sys.exit(0 if valid else 21)\n')
+            config = json.dumps({'keystore_path': expected[2],
+                                 'ks-key-alias': 'alias%USERNAME%', 'ks-pass': 'pass:' + password})
             with mock.patch.dict(os.environ, {'USERNAME': 'must-not-expand',
-                                              'APKUTIL_TEST_PYTHON': sys.executable}), \
+                                              'APKUTIL_TEST_PYTHON': sys.executable,
+                                              'APKUTIL_KS_PASS': password,
+                                              'APKUTIL_EXPECTED_ARGS': json.dumps(expected),
+                                              'APKUTIL_EXPECTED_PASSWORD': password}), \
                     mock.patch('builtins.open', mock.mock_open(read_data=config)), \
                     mock.patch.object(util.os.path, 'isfile', return_value=True), \
-                    mock.patch.object(util, '_find_tool', return_value=str(script)):
-                # Prove the fixture reproduces the original CALL expansion.
-                _, _, code = util._run_subprocess(
-                    [str(script), 'sign', '--ks-pass', 'pass:' + password])
+                    mock.patch.object(util, '_find_tool', return_value=str(root / 'apksigner.bat')):
+                # CALL corrupts paths/aliases even with an env password source.
+                _, _, code = util._run_subprocess([str(script)] + expected)
                 self.assertEqual(code, 21)
-                self.assertTrue(util.sign('sample.apk'))
+                # The native launch bypasses CALL; the actual SDK JAR is also
+                # exercised by test_sdk_integration on Windows CI.
+                with mock.patch.object(util, '_apksigner_java_command',
+                                       return_value=[sys.executable, str(checker)]):
+                    self.assertTrue(util.sign(expected[-1]))
+
+
+class WindowsLauncherTest(unittest.TestCase):
+    def test_apktool_batch_cannot_wait_for_terminal_input(self):
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b'2.12.0', b'')
+        with mock.patch.object(util, '_IS_WINDOWS', True), \
+                mock.patch.object(util, '_find_tool', return_value='apktool.bat'), \
+                mock.patch.object(util.subprocess, 'Popen', return_value=process) as popen:
+            util._run_subprocess(['apktool', '--version'])
+            self.assertEqual(popen.call_args.kwargs['stdin'], util.subprocess.DEVNULL)
+
+    def test_sdk_jar_and_java_home_are_used_without_a_shell(self):
+        with tempfile.TemporaryDirectory(prefix='sdk %USERNAME% ') as directory:
+            root = Path(directory)
+            jar = root / 'lib/apksigner.jar'
+            jar.parent.mkdir()
+            jar.touch()
+            java = root / 'jdk/bin/java.exe'
+            java.parent.mkdir(parents=True)
+            java.touch()
+            process = mock.Mock(returncode=0)
+            process.communicate.return_value = (b'', b'')
+            args = ['sign', '-ks', 'key%USERNAME%.jks', '--ks-key-alias',
+                    'alias%USERNAME%', 'sample%USERNAME%.apk']
+            with mock.patch.object(util, '_IS_WINDOWS', True), \
+                    mock.patch.dict(os.environ, {'JAVA_HOME': str(root / 'jdk')}), \
+                    mock.patch.object(util.subprocess, 'Popen', return_value=process) as popen:
+                util._run_subprocess([str(root / 'apksigner.bat')] + args)
+                self.assertEqual(popen.call_args.args[0],
+                                 [str(java), '-Xmx1024M', '-Xss1m', '-jar', str(jar)] + args)
+                self.assertNotIn('stdin', popen.call_args.kwargs)
+
+    def test_missing_sdk_jar_reports_error_instead_of_reparsing_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, 'apksigner.jar not found'):
+                util._apksigner_java_command(os.path.join(directory, 'apksigner.bat'))
