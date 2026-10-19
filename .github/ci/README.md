@@ -44,5 +44,7 @@ retains `security-events: write` to upload its results.
 The Windows SDK smoke test leaves an input pipe open while querying apktool,
 so an accidental PAUSE blocks and fails the timeout rather than passing because
 CI already closed stdin. Signing uses the SDK's apksigner JAR via native Java
-arguments to avoid the batch launcher's CALL re-expansion. The smoke test uses
+arguments to avoid the batch launcher's CALL re-expansion when the launcher is
+in `build-tools/<version>/` with `lib/apksigner.jar`. Custom PATH wrappers are
+executed as supplied; their own argument handling remains in effect. The smoke test uses
 literal `%USERNAME%` in APK/keystore filenames, the key alias, and the password.

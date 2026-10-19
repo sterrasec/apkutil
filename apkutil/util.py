@@ -66,6 +66,15 @@ def _find_tool(name):
     raise FileNotFoundError('{0} not found in the Android SDK or PATH'.format(name))
 
 
+def _is_sdk_apksigner(wrapper):
+    # A PATH entry can be an arbitrary forwarding script. Only bypass a
+    # launcher in the SDK's build-tools/<version>/ layout with its SDK JAR.
+    directory = os.path.dirname(os.path.realpath(wrapper))
+    return (os.path.basename(os.path.dirname(directory)).lower() == 'build-tools'
+            and _build_tools_version(directory)[0] >= 0
+            and os.path.isfile(os.path.join(directory, 'lib', 'apksigner.jar')))
+
+
 def _apksigner_java_command(wrapper):
     # The SDK's batch launcher uses CALL, which reparses every argument. Launch
     # its JAR directly so paths, aliases and other options reach Java literally.
@@ -101,7 +110,8 @@ def _run_subprocess(cmd, env=None):
         cmd[0] = _find_tool('apktool')
     is_batch = _IS_WINDOWS and os.path.splitext(cmd[0])[1].lower() in ('.bat', '.cmd')
     is_apktool_batch = is_batch and os.path.basename(cmd[0]).lower() in ('apktool.bat', 'apktool.cmd')
-    if is_batch and os.path.basename(cmd[0]).lower() in ('apksigner.bat', 'apksigner.cmd'):
+    if (is_batch and os.path.basename(cmd[0]).lower() in ('apksigner.bat', 'apksigner.cmd')
+            and _is_sdk_apksigner(cmd[0])):
         cmd = _apksigner_java_command(cmd[0]) + cmd[1:]
         is_batch = False
     if is_batch:

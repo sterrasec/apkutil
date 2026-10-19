@@ -276,7 +276,7 @@ class SigningPasswordTest(unittest.TestCase):
                                               'APKUTIL_EXPECTED_PASSWORD': password}), \
                     mock.patch('builtins.open', mock.mock_open(read_data=config)), \
                     mock.patch.object(util.os.path, 'isfile', return_value=True), \
-                    mock.patch.object(util, '_find_tool', return_value=str(root / 'apksigner.bat')):
+                    mock.patch.object(util, '_find_tool', return_value=str(root / 'build-tools/36.0.0/apksigner.bat')):
                 # CALL corrupts paths/aliases even with an env password source.
                 _, _, code = util._run_subprocess([str(script)] + expected)
                 self.assertEqual(code, 21)
@@ -300,8 +300,9 @@ class WindowsLauncherTest(unittest.TestCase):
     def test_sdk_jar_and_java_home_are_used_without_a_shell(self):
         with tempfile.TemporaryDirectory(prefix='sdk %USERNAME% ') as directory:
             root = Path(directory)
-            jar = root / 'lib/apksigner.jar'
-            jar.parent.mkdir()
+            sdk_tools = root / 'build-tools/36.0.0'
+            jar = sdk_tools / 'lib/apksigner.jar'
+            jar.parent.mkdir(parents=True)
             jar.touch()
             java = root / 'jdk/bin/java.exe'
             java.parent.mkdir(parents=True)
@@ -313,7 +314,7 @@ class WindowsLauncherTest(unittest.TestCase):
             with mock.patch.object(util, '_IS_WINDOWS', True), \
                     mock.patch.dict(os.environ, {'JAVA_HOME': str(root / 'jdk')}), \
                     mock.patch.object(util.subprocess, 'Popen', return_value=process) as popen:
-                util._run_subprocess([str(root / 'apksigner.bat')] + args)
+                util._run_subprocess([str(sdk_tools / 'apksigner.bat')] + args)
                 self.assertEqual(popen.call_args.args[0],
                                  [str(java), '-Xmx1024M', '-Xss1m', '-jar', str(jar)] + args)
                 self.assertNotIn('stdin', popen.call_args.kwargs)
@@ -322,3 +323,53 @@ class WindowsLauncherTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(RuntimeError, 'apksigner.jar not found'):
                 util._apksigner_java_command(os.path.join(directory, 'apksigner.bat'))
+
+
+    def test_path_apksigner_wrappers_are_launched_without_java_or_a_jar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process = mock.Mock(returncode=0)
+            process.communicate.return_value = (b'Signed', b'')
+            # An unrelated nearby JAR must not make us bypass a custom wrapper.
+            (root / 'lib').mkdir()
+            (root / 'lib/apksigner.jar').touch()
+            for suffix in ('.bat', '.cmd'):
+                with self.subTest(suffix=suffix), \
+                        mock.patch.object(util, '_IS_WINDOWS', True), \
+                        mock.patch.dict(os.environ, {'JAVA_HOME': str(root / 'missing-java')}), \
+                        mock.patch.object(util, '_apksigner_java_command') as direct_java, \
+                        mock.patch.object(util.subprocess, 'Popen', return_value=process) as popen:
+                    wrapper = root / ('apksigner' + suffix)
+                    wrapper.touch()
+                    with mock.patch.object(util, 'ANDROID_HOME', str(root / 'no-sdk')), \
+                            mock.patch.object(util.shutil, 'which', return_value=str(wrapper)):
+                        resolved = util._find_tool('apksigner')
+                    self.assertEqual(util._run_subprocess([resolved, 'sign', 'sample.apk']),
+                                     ('Signed', '', 0))
+                    direct_java.assert_not_called()
+                    self.assertIsInstance(popen.call_args.args[0], str)
+                    self.assertEqual(popen.call_args.kwargs['env']['APKUTIL_ARG_0'], str(wrapper))
+                    self.assertEqual(popen.call_args.kwargs['env']['APKUTIL_ARG_2'], 'sample.apk')
+                    self.assertNotIn('stdin', popen.call_args.kwargs)
+
+    @unittest.skipUnless(os.name == 'nt', 'Requires cmd.exe')
+    def test_path_apksigner_forwarding_wrapper_runs(self):
+        with tempfile.TemporaryDirectory(prefix='apkutil path wrapper ') as directory:
+            root = Path(directory)
+            checker = root / 'check_args.py'
+            checker.write_text(
+                'import json, sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(7)\n')
+            for suffix in ('.bat', '.cmd'):
+                with self.subTest(suffix=suffix):
+                    wrapper = root / ('apksigner' + suffix)
+                    wrapper.write_text('@echo off\n'
+                                       '"%APKUTIL_TEST_PYTHON%" "%~dp0check_args.py" %*\n'
+                                       'exit /b %errorlevel%\n')
+                    with mock.patch.dict(os.environ, {'APKUTIL_TEST_PYTHON': sys.executable}), \
+                            mock.patch.object(util, 'ANDROID_HOME', str(root / 'no-sdk')), \
+                            mock.patch.object(util.shutil, 'which', return_value=str(wrapper)):
+                        resolved = util._find_tool('apksigner')
+                        args = ['sign', '-ks', 'key store.jks', 'sample app.apk']
+                        out, err, code = util._run_subprocess([resolved] + args)
+                        self.assertEqual(code, 7, out + err)
+                        self.assertEqual(json.loads(out), args)
