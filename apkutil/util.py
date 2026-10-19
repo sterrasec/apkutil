@@ -78,7 +78,7 @@ def _is_sdk_apksigner(wrapper):
 def _apksigner_java_command(wrapper):
     # The SDK's batch launcher uses CALL, which reparses every argument. Launch
     # its JAR directly so paths, aliases and other options reach Java literally.
-    directory = os.path.dirname(os.path.abspath(wrapper))
+    directory = os.path.dirname(os.path.realpath(wrapper))
     candidates = [os.path.join(directory, 'apksigner.jar'),
                   os.path.join(directory, 'lib', 'apksigner.jar'),
                   os.path.join(directory, '..', 'framework', 'apksigner.jar')]

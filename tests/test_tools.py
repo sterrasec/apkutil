@@ -316,7 +316,7 @@ class WindowsLauncherTest(unittest.TestCase):
                     mock.patch.object(util.subprocess, 'Popen', return_value=process) as popen:
                 util._run_subprocess([str(sdk_tools / 'apksigner.bat')] + args)
                 self.assertEqual(popen.call_args.args[0],
-                                 [str(java), '-Xmx1024M', '-Xss1m', '-jar', str(jar)] + args)
+                                 [str(java), '-Xmx1024M', '-Xss1m', '-jar', str(jar.resolve())] + args)
                 self.assertNotIn('stdin', popen.call_args.kwargs)
 
     def test_missing_sdk_jar_reports_error_instead_of_reparsing_arguments(self):
@@ -373,3 +373,43 @@ class WindowsLauncherTest(unittest.TestCase):
                         out, err, code = util._run_subprocess([resolved] + args)
                         self.assertEqual(code, 7, out + err)
                         self.assertEqual(json.loads(out), args)
+
+
+    def test_path_symlink_uses_the_target_sdk_jar(self):
+        with tempfile.TemporaryDirectory(prefix='apkutil sdk link ') as directory:
+            root = Path(directory)
+            target = root / 'sdk/build-tools/36.0.0/apksigner.bat'
+            target.parent.mkdir(parents=True)
+            target.touch()
+            jar = target.parent / 'lib/apksigner.jar'
+            jar.parent.mkdir()
+            jar.touch()
+            java = root / 'jdk/bin/java.exe'
+            java.parent.mkdir(parents=True)
+            java.touch()
+            links = root / 'bin'
+            links.mkdir()
+            process = mock.Mock(returncode=0)
+            process.communicate.return_value = (b'Signed', b'')
+            for suffix in ('.bat', '.cmd'):
+                with self.subTest(suffix=suffix):
+                    link = links / ('apksigner' + suffix)
+                    try:
+                        link.symlink_to(os.path.relpath(target, links))
+                    except OSError as error:
+                        if os.name == 'nt' and getattr(error, 'winerror', None) == 1314:
+                            self.skipTest('Windows symlink privilege unavailable')
+                        raise
+                    with mock.patch.object(util, '_IS_WINDOWS', True), \
+                            mock.patch.object(util, 'ANDROID_HOME', str(root / 'no-sdk')), \
+                            mock.patch.object(util.shutil, 'which', return_value=str(link)), \
+                            mock.patch.dict(os.environ, {'JAVA_HOME': str(root / 'jdk')}), \
+                            mock.patch.object(util.subprocess, 'Popen', return_value=process) as popen:
+                        resolved = util._find_tool('apksigner')
+                        self.assertEqual(resolved, str(link))
+                        self.assertTrue(util._is_sdk_apksigner(resolved))
+                        self.assertEqual(util._run_subprocess([resolved, 'sign', 'sample.apk']),
+                                         ('Signed', '', 0))
+                        self.assertEqual(popen.call_args.args[0],
+                                         [str(java), '-Xmx1024M', '-Xss1m', '-jar',
+                                          str(jar.resolve()), 'sign', 'sample.apk'])
