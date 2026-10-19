@@ -137,6 +137,17 @@ class ExecutionTest(unittest.TestCase):
             self.assertEqual(env['APKUTIL_ARG_3'], '-o')
             self.assertEqual(env['APKUTIL_ARG_4'], 'out.apk')
 
+    def test_batch_empty_argument_is_quoted_without_an_environment_reference(self):
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b'', b'')
+        with mock.patch.object(util, '_IS_WINDOWS', True), \
+                mock.patch.object(util.subprocess, 'Popen', return_value=process) as popen:
+            util._run_subprocess(['wrapper.cmd', '', 'following'])
+            command = popen.call_args.args[0]
+            self.assertIn('"%APKUTIL_ARG_0%" "" "%APKUTIL_ARG_2%"', command)
+            self.assertNotIn('%APKUTIL_ARG_1%', command)
+            self.assertNotIn('APKUTIL_ARG_1', popen.call_args.kwargs['env'])
+
     @unittest.skipUnless(os.name == 'nt', 'Requires cmd.exe')
     def test_real_windows_batch_arguments(self):
         with tempfile.TemporaryDirectory(prefix='apkutil batch ') as directory:
@@ -194,7 +205,8 @@ class ExecutionTest(unittest.TestCase):
                 if os.name == 'nt':
                     del os.environ['HOME']
                 self.assertTrue(util.sign(str(apk)))
-                self.assertIn(str(root / 'key.jks'), run.call_args.args[0])
+                command = run.call_args.args[0]
+                self.assertEqual(Path(command[command.index('-ks') + 1]), root / 'key.jks')
 
 
 class SigningPasswordTest(unittest.TestCase):

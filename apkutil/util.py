@@ -126,6 +126,11 @@ def _run_subprocess(cmd, env=None):
         for index, argument in enumerate(cmd):
             if any(char in argument for char in ('"', '\r', '\n', '\0')):
                 raise ValueError('Unsupported character in Windows batch argument')
+            if argument == '':
+                # cmd /c leaves an undefined %NAME% literal; empty variables
+                # are treated as undefined. Encode the empty argument itself.
+                arguments.append('""')
+                continue
             key = 'APKUTIL_ARG_{0}'.format(index)
             # Batch wrappers forward %* to Java/native programs. A closing
             # quote after N backslashes must follow 2N backslashes so the
