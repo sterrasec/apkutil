@@ -1,0 +1,8 @@
+# Runtime dependencies mirror setup.py; pip check verifies the installed project.
+inquirer
+colorama
+defusedxml
+# Test and local package build tools (no isolated, unpinned build dependencies).
+pytest
+setuptools
+wheel

@@ -8,20 +8,147 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 
 from colorama import Fore
 import inquirer
 
-ANDROID_SDK_DEFAULT_PATH = '/Library/Android/sdk/'
-ANDROID_HOME = os.environ.get('ANDROID_HOME', ANDROID_SDK_DEFAULT_PATH)
+_IS_WINDOWS = os.name == 'nt'
+
+
+def _get_android_home():
+    sdk_path = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')
+    if sdk_path:
+        return os.path.expanduser(sdk_path)
+    if _IS_WINDOWS:
+        local_appdata = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~/AppData/Local')
+        return os.path.join(local_appdata, 'Android', 'Sdk')
+    if sys.platform == 'darwin':
+        return os.path.expanduser('~/Library/Android/sdk')
+    return os.path.expanduser('~/Android/Sdk')
+
+
+ANDROID_HOME = _get_android_home()
 
 # Oldest apktool apkutil is known to work with. Older releases can't decode
 # APKs built by recent aapt2 and default to aapt1 when building.
 APKTOOL_MIN_VERSION = (2, 9, 0)
 
 # Private methods
-def _run_subprocess(cmd):
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def _build_tools_version(path):
+    version = os.path.basename(path)
+    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:[- ](.+))?', version)
+    if match is None:
+        return (-1, -1, -1, False, version)
+    major, minor, patch, preview = match.groups()
+    return (int(major), int(minor), int(patch), preview is None, preview or '')
+
+
+def _find_tool(name):
+    # Prefer the configured SDK, falling back to tools installed on PATH.
+    if name == 'adb':
+        directories = [os.path.join(ANDROID_HOME, 'platform-tools')]
+    elif name == 'apktool':
+        directories = []
+    else:
+        directories = sorted(glob.glob(os.path.join(ANDROID_HOME, 'build-tools', '*')),
+                             key=_build_tools_version, reverse=True)
+    suffixes = ('.exe', '.bat', '.cmd', '') if _IS_WINDOWS else ('',)
+    for directory in directories:
+        for suffix in suffixes:
+            candidate = os.path.join(directory, name + suffix)
+            if os.path.isfile(candidate):
+                return candidate
+    path = shutil.which(name)
+    if path:
+        return path
+    raise FileNotFoundError('{0} not found in the Android SDK or PATH'.format(name))
+
+
+def _is_sdk_apksigner(wrapper):
+    # A PATH entry can be an arbitrary forwarding script. Only bypass a
+    # launcher in the SDK's build-tools/<version>/ layout with its SDK JAR.
+    directory = os.path.dirname(os.path.realpath(wrapper))
+    return (os.path.basename(os.path.dirname(directory)).lower() == 'build-tools'
+            and _build_tools_version(directory)[0] >= 0
+            and os.path.isfile(os.path.join(directory, 'lib', 'apksigner.jar')))
+
+
+def _apksigner_java_command(wrapper):
+    # The SDK's batch launcher uses CALL, which reparses every argument. Launch
+    # its JAR directly so paths, aliases and other options reach Java literally.
+    directory = os.path.dirname(os.path.realpath(wrapper))
+    candidates = [os.path.join(directory, 'apksigner.jar'),
+                  os.path.join(directory, 'lib', 'apksigner.jar'),
+                  os.path.join(directory, '..', 'framework', 'apksigner.jar')]
+    jar = next((path for path in candidates if os.path.isfile(path)), None)
+    if jar is None:
+        raise RuntimeError('apksigner.jar not found beside {0}'.format(wrapper))
+    java_home = os.environ.get('JAVA_HOME', '').strip('"')
+    if java_home:
+        java = os.path.join(java_home, 'bin', 'java.exe')
+        if not os.path.isfile(java):
+            raise RuntimeError('java.exe not found in JAVA_HOME')
+    else:
+        java = shutil.which('java')
+        if java is None:
+            raise RuntimeError('java not found in PATH; please install Java or set JAVA_HOME')
+    # Match the SDK wrapper's default VM settings.
+    return [java, '-Xmx1024M', '-Xss1m', '-jar', jar]
+
+
+def _run_subprocess(cmd, env=None):
+    # Resolve apktool via PATH/PATHEXT as CreateProcess does not find .bat/.cmd
+    # wrappers from the extensionless name. SDK commands are already resolved.
+    child_env = None
+    if env is not None:
+        child_env = os.environ.copy()
+        child_env.update(env)
+    cmd = list(cmd)
+    if cmd[0] == 'apktool':
+        cmd[0] = _find_tool('apktool')
+    is_batch = _IS_WINDOWS and os.path.splitext(cmd[0])[1].lower() in ('.bat', '.cmd')
+    is_apktool_batch = is_batch and os.path.basename(cmd[0]).lower() in ('apktool.bat', 'apktool.cmd')
+    if (is_batch and os.path.basename(cmd[0]).lower() in ('apksigner.bat', 'apksigner.cmd')
+            and _is_sdk_apksigner(cmd[0])):
+        cmd = _apksigner_java_command(cmd[0]) + cmd[1:]
+        is_batch = False
+    if is_batch:
+        # Pass a command-line string so Popen does not re-escape the quotes for
+        # the C runtime. /s strips the outer pair, preserving quoted paths.
+        # Environment variables protect the initial cmd expansion only; a
+        # wrapper using CALL can expand arguments again. Keep passwords out
+        # of arguments. Disable delayed expansion for paths containing '!'.
+        if child_env is None:
+            child_env = os.environ.copy()
+        arguments = []
+        for index, argument in enumerate(cmd):
+            if any(char in argument for char in ('"', '\r', '\n', '\0')):
+                raise ValueError('Unsupported character in Windows batch argument')
+            if argument == '':
+                # cmd /c leaves an undefined %NAME% literal; empty variables
+                # are treated as undefined. Encode the empty argument itself.
+                arguments.append('""')
+                continue
+            key = 'APKUTIL_ARG_{0}'.format(index)
+            # Batch wrappers forward %* to Java/native programs. A closing
+            # quote after N backslashes must follow 2N backslashes so the
+            # native argument parser preserves them and closes the quote.
+            trailing_slashes = len(argument) - len(argument.rstrip('\\'))
+            child_env[key] = argument + '\\' * trailing_slashes
+            arguments.append('"%{0}%"'.format(key))
+        shell = os.environ.get('COMSPEC', 'cmd.exe')
+        command = '"{0}" /d /v:off /s /c "{1}"'.format(shell, ' '.join(arguments))
+        cmd = command
+    options = {'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE}
+    if is_apktool_batch:
+        # The official wrapper runs PAUSE under cmd /c. Give it EOF rather
+        # than inheriting a terminal or an open input pipe and waiting forever.
+        options['stdin'] = subprocess.DEVNULL
+    if child_env is not None:
+        options['env'] = child_env
+    proc = subprocess.Popen(cmd, **options)
     outs, errs = proc.communicate()
     # Tool output is not guaranteed to be ASCII (e.g. apktool's usage text
     # contains "Wiśniewski", and paths/locales may be non-ASCII), so decode
@@ -70,7 +197,7 @@ def _apktool_supports_use_aapt2():
     return version < (2, 12, 0)
 
 def _get_package_name(keyword):
-    adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
+    adb_path = _find_tool('adb')
     list_packages_cmd = [adb_path, 'shell', 'pm', 'list', 'packages']
     outs, errs, returncode = _run_subprocess(list_packages_cmd)
     if returncode != 0:
@@ -81,7 +208,7 @@ def _get_package_name(keyword):
     return package_names if package_names else None
 
 def _pull_apk_files(apk_paths):
-    adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
+    adb_path = _find_tool('adb')
     for apk_path in apk_paths:
         print(f"Pulling {apk_path}...")
         pull_cmd = [adb_path, 'pull', apk_path]
@@ -94,7 +221,7 @@ def _pull_apk_files(apk_paths):
         print(errs)
 
 def _get_apk_paths(package_name):
-    adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
+    adb_path = _find_tool('adb')
     path_cmd = [adb_path, 'shell', 'pm', 'path', package_name]
     outs, errs, returncode = _run_subprocess(path_cmd)
     if returncode != 0:
@@ -223,17 +350,19 @@ def build(dir_name, apk_path):
 
 def align(apk_path):
     try:
-        zipalign_path = glob.glob(ANDROID_HOME + '/build-tools/*/zipalign')[0]
+        zipalign_path = _find_tool('zipalign')
         zipalign_cmd = [zipalign_path]
         zipalign_cmd.append('-f')
         zipalign_cmd.extend(['-p', '4'])
         zipalign_cmd.append(apk_path)
-        zipalign_cmd.append('/tmp/apkutil_tmp.aligned.apk')
-        outs, errs, returncode = _run_subprocess(zipalign_cmd)
-        if returncode != 0:
-            raise Exception(_error_message(zipalign_cmd, outs, errs, returncode))
+        with tempfile.TemporaryDirectory(prefix='apkutil-') as temp_dir:
+            aligned_path = os.path.join(temp_dir, 'aligned.apk')
+            zipalign_cmd.append(aligned_path)
+            outs, errs, returncode = _run_subprocess(zipalign_cmd)
+            if returncode != 0:
+                raise Exception(_error_message(zipalign_cmd, outs, errs, returncode))
 
-        shutil.move('/tmp/apkutil_tmp.aligned.apk', apk_path)
+            shutil.move(aligned_path, apk_path)
         return True
 
     except (IndexError, FileNotFoundError) as e:
@@ -242,15 +371,15 @@ def align(apk_path):
         return False
 
 def sign(apk_path):
-    home_dir = os.environ['HOME']
+    home_dir = os.path.expanduser('~')
     keystore_path = ''
     ks_key_alias = ''
     ks_pass = ''
 
     try:
-        with open(home_dir + "/apkutil.json") as f:
+        with open(os.path.join(home_dir, 'apkutil.json')) as f:
             config = json.load(f)
-            keystore_path = config['keystore_path'].replace('~', home_dir)
+            keystore_path = os.path.expanduser(config['keystore_path'])
             ks_key_alias = config['ks-key-alias']
             ks_pass = config['ks-pass']
 
@@ -263,16 +392,22 @@ def sign(apk_path):
             errs = '{0} is not found.'.format(apk_path)
             raise Exception(errs)
 
-        apksigner_path = glob.glob(ANDROID_HOME + '/build-tools/*/apksigner')[0]
+        apksigner_path = _find_tool('apksigner')
         apksigner_cmd = [apksigner_path]
         apksigner_cmd.append('sign')
         apksigner_cmd.extend(['-ks', keystore_path])
         apksigner_cmd.extend(['--v2-signing-enabled', 'true'])
         apksigner_cmd.append('-v')
         apksigner_cmd.extend(['--ks-key-alias', ks_key_alias])
+        signing_env = None
+        if ks_pass.startswith('pass:'):
+            # apksigner.bat uses CALL, which reparses %NAME% even inside quoted
+            # arguments. Let Java read the literal password from its own env.
+            signing_env = {'APKUTIL_KS_PASS': ks_pass[len('pass:'):]}
+            ks_pass = 'env:APKUTIL_KS_PASS'
         apksigner_cmd.extend(['--ks-pass', ks_pass])
         apksigner_cmd.append(apk_path)
-        outs, errs, returncode = _run_subprocess(apksigner_cmd)
+        outs, errs, returncode = _run_subprocess(apksigner_cmd, env=signing_env)
         if (outs is not None) and (len(outs) != 0):
             print(Fore.CYAN + outs)
         
@@ -294,7 +429,7 @@ def sign(apk_path):
 
 def get_packagename(apk_path):
     try:
-        aapt2_path = glob.glob(ANDROID_HOME + '/build-tools/*/aapt2')[0]
+        aapt2_path = _find_tool('aapt2')
         aapt2_cmd = [aapt2_path]
         aapt2_cmd.append('dump')
         aapt2_cmd.append('packagename')
@@ -315,7 +450,7 @@ def get_packagename(apk_path):
 
 def get_screenshot():
     try:
-        adb_path = glob.glob(ANDROID_HOME + '/platform-tools/adb')[0]
+        adb_path = _find_tool('adb')
         now = datetime.datetime.now()
         timestamp = now.strftime("%Y-%m-%d-%H-%M-%S")
         screenshot_file = 'screenshot-' + timestamp + '.png'
@@ -357,8 +492,9 @@ def get_screenshot():
 def check_sensitive_files(target_path):
     types = ('**/*.md', '**/*.cpp', '**/*.c', '**/*.h', '**/*.java', '**/*.kts',
         '**/*.bat', '**/*.sh', '**/*.template', '**/*.gradle', '**/*.json', '**/*.yml', '**/*.txt')
-    allow_list = ('apktool.yml', '/assets/google-services-desktop.json',
-        '/assets/bin/Data/RuntimeInitializeOnLoads.json', '/assets/bin/Data/ScriptingAssemblies.json')
+    allow_list = ('apktool.yml', os.sep + os.path.join('assets', 'google-services-desktop.json'),
+        os.sep + os.path.join('assets', 'bin', 'Data', 'RuntimeInitializeOnLoads.json'),
+        os.sep + os.path.join('assets', 'bin', 'Data', 'ScriptingAssemblies.json'))
     found_files = []
     for file_type in types:
         found_files.extend(glob.glob(os.path.join(target_path, file_type), recursive=True))

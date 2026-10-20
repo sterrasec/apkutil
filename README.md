@@ -5,20 +5,24 @@
 `apkutil` is a useful utility for mobile security testing.
 This tool makes it easy to resign the APK, check for potentially sensitive files and `AndroidManifest.xml` in the APK.
 
-It is a wrapper for `apktool`, `apksigner`, `aapt`, and `zipalign` commands.
+It is a wrapper for `apktool`, `apksigner`, `aapt2`, and `zipalign` commands.
 
 iOS version is [here](https://github.com/sterrasec/ipautil).
 
 ## Requirements
 
-- Android SDK build tools
-  - Set PATH to `ANDROID_HOME` for `apksigner`, `aapt`, and `zipalign`.
-    - ex) `ANDROID_HOME=/Users/<User Name>/Library/Android/sdk/`
-    - If you are using Android Studio on macOS, the above path should be
-- [Apktool](https://ibotpeaches.github.io/Apktool/) 2.9.0 or later
+- Android SDK platform-tools and build-tools
+  - Set `ANDROID_HOME` to the SDK directory, for example `~/Library/Android/sdk` on macOS.
+  - `ANDROID_SDK_ROOT` is also supported; `ANDROID_HOME` takes precedence.
+  - Without either variable, the default is `~/Library/Android/sdk` on macOS,
+    `%LOCALAPPDATA%\Android\Sdk` on Windows, or `~/Android/Sdk` on Linux.
+  - Tools are resolved from the SDK first, using the newest installed build-tools
+    version containing the requested tool, then from `PATH`.
+  - Windows `.exe`, `.bat`, and `.cmd` tools are supported.
+- [Apktool](https://ibotpeaches.github.io/Apktool/) 2.9.0 or later, available on `PATH`
   - Older versions still run, but `apkutil` prints a warning because they can't decode APKs built by recent `aapt2`.
 
-Also, place `~/apkutil.json` containing the keystore information necessary for signing apk in your home directory.
+Also, place `~/apkutil.json` containing the keystore information necessary for signing apk in your home directory (`%USERPROFILE%` on Windows).
 
 ```
 {
